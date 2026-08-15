@@ -12,6 +12,8 @@ manifest:
         name-allowlist:
           - cmsis_6
           - hal_nxp
+          - open-amp
+          - libmetal
 
   self:
     path: apps
