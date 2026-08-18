@@ -1,0 +1,71 @@
+/*
+ * XPI-iMX8MM: can-gw = rpmsg-echo の共有メモリ/MU 取り決め +
+ * can-sniff の MCP2515 (ECSPI2) 配線の合成。
+ *
+ * rpmsg (Linux 側 DT imx8mm-xpi-kart.dts との取り決め):
+ * - vdevbuffer 予約領域 = 0xB8400000 0x100000 (shared-dma-pool)
+ *   → vring/バッファは全部この中にカーネルが確保する。ここを ipc_shm 窓に
+ * - MU: A53 側 mboxes = <&mu 0 1 &mu 1 1 &mu 3 1> (idx1) — IPM ID は
+ *   board conf 側で合わせる
+ *
+ * CAN (値は Linux 側 DT の MCP2515 ノードと同一):
+ * - 発振 12MHz / SPI 10MHz / INT = GPIO3_IO24 (level-low) / CS0 / 1Mbps
+ * - 前提: Linux 側で can0 down + mcp251x を unbind してから M4 を起動
+ */
+/ {
+	chosen {
+		zephyr,ipc_shm = &shram;
+		zephyr,ipc = &mailbox0;
+	};
+
+	shram: memory@b8400000 {
+		compatible = "mmio-sram";
+		reg = <0xb8400000 0x100000>;
+	};
+};
+
+&mailbox0 {
+	status = "okay";
+};
+
+&pinctrl {
+	ecspi2_default: ecspi2_default {
+		group0 {
+			/* SS0 はネイティブ CS でなく GPIO5_IO13 として運用:
+			 * mcux ECSPI ドライバはネイティブ CS だとマルチバッファ
+			 * コマンド (BIT MODIFY 等) の途中で CS がパルスし、
+			 * MCP2515 のモード遷移が効かない (実測) */
+			pinmux = <&iomuxc_ecspi2_sclk_ecspi_sclk_ecspi2_sclk>,
+				 <&iomuxc_ecspi2_mosi_ecspi_mosi_ecspi2_mosi>,
+				 <&iomuxc_ecspi2_miso_ecspi_miso_ecspi2_miso>,
+				 <&iomuxc_ecspi2_ss0_gpio_io_gpio5_io13>;
+			slew-rate = "fast";
+			drive-strength = "x6";
+		};
+	};
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+&gpio5 {
+	status = "okay";
+};
+
+&ecspi2 {
+	status = "okay";
+	pinctrl-0 = <&ecspi2_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
+
+	can_mcp2515: mcp2515@0 {
+		compatible = "microchip,mcp2515";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		osc-freq = <12000000>;
+		int-gpios = <&gpio3 24 GPIO_ACTIVE_LOW>;
+		bitrate = <1000000>;
+		status = "okay";
+	};
+};
