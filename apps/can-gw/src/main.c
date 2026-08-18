@@ -79,11 +79,9 @@ static int kart_m4_clocks_enable(void)
 	*(volatile uint32_t *)CCM_CCGR_GPIO3_SET = 0x3333;
 	*(volatile uint32_t *)CCM_CCGR_GPIO5_SET = 0x3333;
 	*(volatile uint32_t *)CCM_CCGR_UART4_SET = 0x3333;
-	/* UART4 パッド mux (POR 既定は ALT5=GPIO のまま)。Linux は uart4 を
-	 * 持たず (M4 専用)、Zephyr board dts にも pinctrl が無いためここで。
-	 * ALT0 = UART4_RX/TX */
-	*(volatile uint32_t *)0x303301F8u = 0x0;	/* UART4_RXD mux */
-	*(volatile uint32_t *)0x303301FCu = 0x0;	/* UART4_TXD mux */
+	/* UART4 パッドはリセット既定が ALT0=UART4 (m4/hello-world 実測) なので
+	 * mux は不要。RX の入力 daisy だけ明示 (実測でも 2 だが依存しない) */
+	*(volatile uint32_t *)0x3033050Cu = 0x2;	/* UART4_RXD input daisy */
 	return 0;
 }
 SYS_INIT(kart_m4_clocks_enable, PRE_KERNEL_1, 0);
