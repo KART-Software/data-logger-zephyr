@@ -345,15 +345,33 @@ static int platform_init(void)
 	metal_io_init(shm_io, (void *)SHM_START_ADDR, &shm_physmap,
 		      SHM_SIZE, -1, 0, addr_translation_get_ops(shm_physmap));
 
-	rsc_table_get(&rsc_table, &rsc_size);
+	void *linked_rsc = NULL;
+
+	rsc_table_get(&linked_rsc, &rsc_size);
 
 	/* kart: imx_rproc は「ライブテーブル」を Linux DT の rsc-table 予約
 	 * 領域 (0xB80FF000) に置く (ELF から解析したテーブルをそこへコピーし、
 	 * status=DRIVER_OK と vring 実アドレスの書き戻しもそこに行く)。
 	 * イメージ内のテーブルを読むと da=-1/status=0 のままで永遠に待つ
 	 * (実測)。リンク済みテーブルは ELF 解析用に残しつつ、実行時は
-	 * 共有側を参照する */
+	 * 共有側 (0xB80FF000) を参照する。
+	 *
+	 * [attach 対応] 起動経路が 2 通り:
+	 *  - remoteproc LOAD (Linux が M4 を起動): Linux が ELF を解析して
+	 *    0xB80FF000 にテーブルを書いてから M4 の reset を解除する。M4 が
+	 *    走り出す時点で ver==1 の有効テーブルが既にある。
+	 *  - SPL loadable / attach (M4 が Linux より先住): Linux は ELF を
+	 *    解析せず 0xB80FF000 を「読む」側に回る。誰も書かないので M4 自身が
+	 *    リンク済みテーブルをここへ publish する必要がある (実測: 現状は
+	 *    M4 が書かないため attach では Linux が空テーブルを読む)。
+	 * 判定: 先頭 u32 = テーブル version。有効 (==1) なら Linux が既に書いた
+	 * (LOAD) ので上書きしない (Linux が書き戻す vring da を潰さないため)。
+	 * 無効なら attach なので M4 が publish する。 */
 	rsc_table = (void *)0xB80FF000UL;
+	if (*(volatile uint32_t *)rsc_table != 1u) {
+		memcpy(rsc_table, linked_rsc, rsc_size);
+		LOG_INF("rsc_table published to 0xB80FF000 (attach mode)");
+	}
 	rsc_tab_physmap = (uintptr_t)rsc_table;
 
 	metal_io_init(rsc_io, rsc_table,
