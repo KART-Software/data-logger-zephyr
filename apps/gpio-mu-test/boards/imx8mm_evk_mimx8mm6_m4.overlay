@@ -1,0 +1,8 @@
+/ {
+	chosen {
+		zephyr,ipc = &mailbox0;
+	};
+};
+&mailbox0 { status = "okay"; };
+&gpio3 { status = "okay"; };
+&gpio5 { status = "okay"; };

@@ -1,0 +1,5 @@
+config CAN_SNIFF_LOOPBACK
+	bool "Use MCP2515 loopback mode (no bus partner needed)"
+	default n
+
+source "Kconfig.zephyr"
