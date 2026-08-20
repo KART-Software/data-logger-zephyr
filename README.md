@@ -1,4 +1,4 @@
-# data-logger-imx8mm-cortex-m4
+# data-logger-zephyr
 
 XPI-iMX8MM (Geniatech) の Cortex-M4 で動くデータロガーファームウェア (Zephyr RTOS)。
 ESP32-S3 版 data-logger の後継。M4 は「CAN ゲートウェイ + ロガー」として、
