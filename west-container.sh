@@ -14,6 +14,35 @@
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+
+# ---- patches/<module>/*.patch を各 west モジュールに冪等適用 ----
+# west には bitbake の SRC_URI パッチ相当が無いので、関所であるこのラッパーが
+# 肩代わりする。適用済み (reverse-check が通る) なら skip、未適用なら apply、
+# どちらも通らなければ「モジュール更新でパッチが古い」ので警告して止める。
+# 現在の中身: zephyr の spi_mcux_ecspi 修正 2 本 (GPIO CS + reg!=0 のチャネル
+# 選択不整合で ISR が来ないバグ / タイムアウト時に SDK handle が busy 固着して
+# バス全体が死ぬバグ)。どちらも実機 (MCP2515+ADS8688 @ ECSPI2) で顕在化・修正。
+apply_patches() {
+    local dir mod p
+    for dir in "$HERE"/patches/*/; do
+        [ -d "$dir" ] || continue
+        mod=$(basename "$dir")
+        [ -d "$HERE/$mod" ] || continue      # west update 前はまだ無い
+        for p in "$dir"*.patch; do
+            [ -f "$p" ] || continue
+            if git -C "$HERE/$mod" apply --reverse --check "$p" 2>/dev/null; then
+                continue                     # 適用済み
+            elif git -C "$HERE/$mod" apply --check "$p" 2>/dev/null; then
+                echo "[west-container] applying $(basename "$p") -> $mod" >&2
+                git -C "$HERE/$mod" apply "$p"
+            else
+                echo "[west-container] ERROR: $(basename "$p") が $mod に適用できない (モジュール更新とのズレ — パッチのリベースが必要)" >&2
+                exit 1
+            fi
+        done
+    done
+}
+apply_patches
 TAG="kart-west:$(sha256sum "$HERE/Dockerfile" | head -c 12)"
 
 if ! docker image inspect "$TAG" >/dev/null 2>&1; then
@@ -39,4 +68,10 @@ if [ "${1:-}" = "--shell" ]; then
     exec docker run "${DOCKER_ARGS[@]}" "$TAG" bash
 fi
 
-exec docker run "${DOCKER_ARGS[@]}" "$TAG" west "$@"
+rc=0
+docker run "${DOCKER_ARGS[@]}" "$TAG" west "$@" || rc=$?
+# west update はモジュールをリセットするので、直後にパッチを当て直す
+case "${1:-}" in
+    update|init) apply_patches ;;
+esac
+exit $rc
