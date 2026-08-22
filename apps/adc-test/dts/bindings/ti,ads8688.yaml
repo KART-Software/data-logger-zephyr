@@ -1,0 +1,3 @@
+description: TI ADS8688 8ch 16bit SAR ADC (raw SPI — Zephyr ドライバ無し。app が spi_dt_spec で直接叩く)
+compatible: "ti,ads8688"
+include: spi-device.yaml
