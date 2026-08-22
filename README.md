@@ -38,6 +38,11 @@ SRC_URI パッチ相当。west に標準機構が無いため `west-container.sh
 | `gpio-mu-test` | MU (IPM) + GPIO のみの最小構成。MU 受信 × ペリフェラル read の SoC リセット切り分け用 |
 | `hello-world` | UART4 printk 疎通の最小雛形 |
 
+CAN のフレームレイアウトは [kart-can](https://github.com/KART-Software/kart-can)
+(サブモジュール) の can.yaml 単一ソースから生成された `kart_can.h/.c` を使う
+(can-gw の 0x700/0x701 詰めは生成 pack)。レイアウト変更は kart-can 側で行い、
+submodule を进める。
+
 ビルドは `apps/hello-world` の部分を各アプリ名に置き換える。can-gw の rpmsg /
 attach 対応・BL31 先住起動などの詳細は kmm-yocto/docs/imx8mm-xpi-bringup/10-cortex-m4.md。
 
@@ -48,6 +53,7 @@ attach 対応・BL31 先住起動などの詳細は kmm-yocto/docs/imx8mm-xpi-br
 gnuarmemb — Zephyr SDK 不要)。
 
 ```bash
+git submodule update --init          # 初回のみ (kart-can = CAN 定義の生成コード)
 ./west-container.sh init -l apps     # 初回のみ
 ./west-container.sh update           # 初回のみ (zephyr + cmsis_6 + hal_nxp ~2.6GB)
 ./west-container.sh build -b imx8mm_evk/mimx8mm6/m4 apps/hello-world
