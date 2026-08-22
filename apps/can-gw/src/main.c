@@ -28,6 +28,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
 #include <zephyr/drivers/spi.h>
+#include "kart_can.h"	/* kart-can 生成物 (can.yaml 単一ソース) */
 #include <zephyr/drivers/ipm.h>
 #include <string.h>
 
@@ -103,7 +104,7 @@ SYS_INIT(kart_m4_clocks_enable, PRE_KERNEL_1, 0);
 
 /* ---- ワイヤ形式と Linux canid_t フラグ ---- */
 
-struct kart_can_wire {
+struct kart_rpmsg_wire {
 	uint32_t id;
 	uint8_t dlc;
 	uint8_t pad[3];
@@ -119,16 +120,16 @@ struct kart_can_wire {
  * Linux 側 candev の netlink 設定 (bitrate/mode) と up/down をここへ流す。
  * enum can_state は Zephyr と Linux で値が一致 (ACTIVE=0/WARN=1/PASSIVE=2/
  * BUS_OFF=3/STOPPED=4/SLEEPING=5) なので EVT_STATE は arg をそのまま渡す。 */
-#define KART_CAN_CTRL_MAGIC 0xC7
+#define KART_RPMSG_CTRL_MAGIC 0xC7
 enum {
-	KART_CAN_CMD_SET_BITRATE = 1,	/* Linux→M4: arg = bitrate [bps] */
-	KART_CAN_CMD_SET_MODE    = 2,	/* Linux→M4: flags = mode ビット */
-	KART_CAN_CMD_START       = 3,	/* Linux→M4: CAN 起動 (ip link up) */
-	KART_CAN_CMD_STOP        = 4,	/* Linux→M4: CAN 停止 (ip link down) */
-	KART_CAN_EVT_STATE       = 5,	/* M4→Linux: arg = enum can_state */
+	KART_RPMSG_CMD_SET_BITRATE = 1,	/* Linux→M4: arg = bitrate [bps] */
+	KART_RPMSG_CMD_SET_MODE    = 2,	/* Linux→M4: flags = mode ビット */
+	KART_RPMSG_CMD_START       = 3,	/* Linux→M4: CAN 起動 (ip link up) */
+	KART_RPMSG_CMD_STOP        = 4,	/* Linux→M4: CAN 停止 (ip link down) */
+	KART_RPMSG_EVT_STATE       = 5,	/* M4→Linux: arg = enum can_state */
 };
 
-struct kart_can_ctrl {
+struct kart_rpmsg_ctrl {
 	uint8_t magic;
 	uint8_t cmd;
 	uint8_t flags;
@@ -136,8 +137,8 @@ struct kart_can_ctrl {
 	uint32_t arg;
 } __packed;
 
-#define KART_CAN_MODE_LISTENONLY (1u << 0)
-#define KART_CAN_MODE_LOOPBACK   (1u << 1)
+#define KART_RPMSG_MODE_LISTENONLY (1u << 0)
+#define KART_RPMSG_MODE_LOOPBACK   (1u << 1)
 
 /* ---- CAN ---- */
 
@@ -184,7 +185,6 @@ static atomic_t stat_can_tx_drop;	/* can_send 失敗 */
  * Linux にも見せる (受信フレームと同じ経路 = 追加コード無し)。
  * デコードは受信側 DBC の責務 (carrier-board-design.md)。 */
 #define ADC_RATE_HZ	30
-#define ADC_CAN_ID_BASE	0x700
 
 /* word=32bit: ADS8688 のフレームは全て 32bit (cmd16+data16 / addr8+data8+echo16)
  * に揃うので 1 転送 = 1 ワード = ISR 1 回で完結させる (8bit×4 の per-word
@@ -276,7 +276,7 @@ static void adc_task(void *p1, void *p2, void *p3)
 		return;
 	}
 	printk("can-gw: ADS8688 sampling %dHz -> CAN 0x%03x/0x%03x\n",
-	       ADC_RATE_HZ, ADC_CAN_ID_BASE, ADC_CAN_ID_BASE + 1);
+	       ADC_RATE_HZ, KART_CAN_DL_700_FRAME_ID, KART_CAN_DL_701_FRAME_ID);
 
 	while (1) {
 		for (int ch = 0; ch < 8; ch++) {
@@ -286,15 +286,30 @@ static void adc_task(void *p1, void *p2, void *p3)
 				v[ch] = 0xFFFF;
 			}
 		}
+		/* フレームレイアウトは kart-can (can.yaml) の生成 pack に一任。
+		 * v[] は生カウントで、生成構造体のフィールドも生カウント (raw) */
+		const struct kart_can_dl_700_t m700 = {
+			.dl_adc_ch0 = v[0], .dl_adc_ch1 = v[1],
+			.dl_adc_ch2 = v[2], .dl_adc_ch3 = v[3],
+		};
+		const struct kart_can_dl_701_t m701 = {
+			.dl_adc_ch4 = v[4], .dl_adc_ch5 = v[5],
+			.dl_adc_ch6 = v[6], .dl_adc_ch7 = v[7],
+		};
+
 		for (int f = 0; f < 2; f++) {
 			struct can_frame frame = {
-				.id = ADC_CAN_ID_BASE + f,
+				.id = (f == 0) ? KART_CAN_DL_700_FRAME_ID
+					       : KART_CAN_DL_701_FRAME_ID,
 				.dlc = 8,
 			};
 
-			for (int i = 0; i < 4; i++) {
-				frame.data[2 * i] = v[4 * f + i] >> 8;
-				frame.data[2 * i + 1] = v[4 * f + i] & 0xFF;
+			if (f == 0) {
+				kart_can_dl_700_pack(frame.data, &m700,
+						     sizeof(frame.data));
+			} else {
+				kart_can_dl_701_pack(frame.data, &m701,
+						     sizeof(frame.data));
 			}
 			/* rpmsg へ (受信フレームと同じ経路に相乗り)。can_send より
 			 * 先に行う — バスに ACK 相手が居ないと同期 can_send は
@@ -359,12 +374,12 @@ static void platform_ipm_callback(const struct device *dev, void *context,
 /* Linux (candev) からの制御メッセージを CAN コントローラへ反映する。
  * mng スレッド文脈から呼ばれる (CAN API 呼び出しは可)。設定は ip link up 時の
  * 数発だけなので、ここで can_stop/start しても vring 処理への影響は軽微 */
-static void kart_can_handle_ctrl(const struct kart_can_ctrl *c)
+static void kart_rpmsg_handle_ctrl(const struct kart_rpmsg_ctrl *c)
 {
 	int ret;
 
 	switch (c->cmd) {
-	case KART_CAN_CMD_SET_BITRATE:
+	case KART_RPMSG_CMD_SET_BITRATE:
 		if (can_started) {
 			can_stop(can_dev);
 			can_started = false;
@@ -372,13 +387,13 @@ static void kart_can_handle_ctrl(const struct kart_can_ctrl *c)
 		ret = can_set_bitrate(can_dev, c->arg);
 		printk("can-gw: set_bitrate %u rc=%d\n", c->arg, ret);
 		break;
-	case KART_CAN_CMD_SET_MODE: {
+	case KART_RPMSG_CMD_SET_MODE: {
 		can_mode_t mode = CAN_MODE_NORMAL;
 
-		if (c->flags & KART_CAN_MODE_LISTENONLY) {
+		if (c->flags & KART_RPMSG_MODE_LISTENONLY) {
 			mode |= CAN_MODE_LISTENONLY;
 		}
-		if (c->flags & KART_CAN_MODE_LOOPBACK) {
+		if (c->flags & KART_RPMSG_MODE_LOOPBACK) {
 			mode |= CAN_MODE_LOOPBACK;
 		}
 		if (can_started) {
@@ -389,14 +404,14 @@ static void kart_can_handle_ctrl(const struct kart_can_ctrl *c)
 		printk("can-gw: set_mode 0x%x rc=%d\n", (unsigned int)mode, ret);
 		break;
 	}
-	case KART_CAN_CMD_START:
+	case KART_RPMSG_CMD_START:
 		if (!can_started) {
 			ret = can_start(can_dev);
 			can_started = (ret == 0);
 			printk("can-gw: start rc=%d\n", ret);
 		}
 		break;
-	case KART_CAN_CMD_STOP:
+	case KART_RPMSG_CMD_STOP:
 		if (can_started) {
 			can_stop(can_dev);
 			can_started = false;
@@ -411,17 +426,17 @@ static void kart_can_handle_ctrl(const struct kart_can_ctrl *c)
 static int rpmsg_recv_can_callback(struct rpmsg_endpoint *ept, void *data,
 				   size_t len, uint32_t src, void *priv)
 {
-	struct kart_can_wire w;
+	struct kart_rpmsg_wire w;
 	struct can_frame frame = {0};
 	int ret;
 
 	atomic_set(&peer_addr, (atomic_val_t)src);
 
-	if (len == sizeof(struct kart_can_ctrl)) {	/* 制御メッセージ (8B) */
-		const struct kart_can_ctrl *c = data;
+	if (len == sizeof(struct kart_rpmsg_ctrl)) {	/* 制御メッセージ (8B) */
+		const struct kart_rpmsg_ctrl *c = data;
 
-		if (c->magic == KART_CAN_CTRL_MAGIC) {
-			kart_can_handle_ctrl(c);
+		if (c->magic == KART_RPMSG_CTRL_MAGIC) {
+			kart_rpmsg_handle_ctrl(c);
 		}
 		return RPMSG_SUCCESS;
 	}
@@ -628,7 +643,7 @@ static void can_gw_task(void *arg1, void *arg2, void *arg3)
 	ARG_UNUSED(arg3);
 
 	struct can_frame frame;
-	struct kart_can_wire w;
+	struct kart_rpmsg_wire w;
 	int ret;
 
 	k_sem_take(&rpdev_ready_sem, K_FOREVER);
@@ -723,9 +738,9 @@ int main(void)
 			uint32_t peer = (uint32_t)atomic_get(&peer_addr);
 
 			if (st >= 0 && peer != (uint32_t)-1) {
-				struct kart_can_ctrl e = {
-					.magic = KART_CAN_CTRL_MAGIC,
-					.cmd = KART_CAN_EVT_STATE,
+				struct kart_rpmsg_ctrl e = {
+					.magic = KART_RPMSG_CTRL_MAGIC,
+					.cmd = KART_RPMSG_EVT_STATE,
 					.arg = (uint32_t)st,
 				};
 

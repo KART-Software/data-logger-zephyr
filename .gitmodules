@@ -1,0 +1,3 @@
+[submodule "kart-can"]
+	path = kart-can
+	url = git@github.com:KART-Software/kart-can.git
