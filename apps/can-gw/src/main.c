@@ -27,6 +27,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
+#include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/ipm.h>
 #include <string.h>
 
@@ -82,6 +83,10 @@ static int kart_m4_clocks_enable(void)
 	/* UART4 パッドはリセット既定が ALT0=UART4 (m4/hello-world 実測) なので
 	 * mux は不要。RX の入力 daisy だけ明示 (実測でも 2 だが依存しない) */
 	*(volatile uint32_t *)0x3033050Cu = 0x2;	/* UART4_RXD input daisy */
+	/* 前任 M4 が SPI 転送中に stop されていると ECSPI2 が動作状態のまま残り、
+	 * SPI ドライバ init がハングする (state=running なのに無音、adc-test で実測)。
+	 * M4 リセットはペリフェラルを初期化しないので毎起動 CONREG=0 で白紙に */
+	*(volatile uint32_t *)0x30830008u = 0;
 	return 0;
 }
 SYS_INIT(kart_m4_clocks_enable, PRE_KERNEL_1, 0);
@@ -167,6 +172,145 @@ static atomic_t stat_can_rx_drop;	/* msgq 満杯ドロップ */
 static atomic_t stat_rpmsg_drop;	/* rpmsg TX バッファ枯渇ドロップ */
 static atomic_t stat_can_tx;		/* rpmsg → CAN 送信数 */
 static atomic_t stat_can_tx_drop;	/* can_send 失敗 */
+
+/* ---- ADS8688 (8ch 16bit ADC、ECSPI2 の 2 個目の CS) ----
+ *
+ * raw SPI で叩く (Zephyr にドライバ無し)。手順・整列は ESP32 版 data-logger
+ * (src/spi/ads8688.cpp) 準拠で apps/adc-test にて実機実証済み:
+ *   RST → 全 ch range 0-5.12V → AUTO_SEQ_EN → AUTO_RST、
+ *   読みは NO_OP×7 + 8 個目 AUTO_RST (毎周 ch0 巻き戻しで整列固定)。
+ * 30Hz で 8ch を読み、CAN ID 0x700 (ch0-3) / 0x701 (ch4-7) に big-endian で
+ * 詰めてバスへ送信し、同じフレームを can_rx_q にも積んで rpmsg 経由で
+ * Linux にも見せる (受信フレームと同じ経路 = 追加コード無し)。
+ * デコードは受信側 DBC の責務 (carrier-board-design.md)。 */
+#define ADC_RATE_HZ	30
+#define ADC_CAN_ID_BASE	0x700
+
+/* word=32bit: ADS8688 のフレームは全て 32bit (cmd16+data16 / addr8+data8+echo16)
+ * に揃うので 1 転送 = 1 ワード = ISR 1 回で完結させる (8bit×4 の per-word
+ * 方式より速く、ドライバの multi-word 経路のリスクも避けられる)。
+ * 注意: GPIO CS + reg!=0 のデバイスは素の Zephyr ドライバではチャネル選択
+ * 不整合で ISR が来ず全滅する — patches/zephyr/ の channel-select fix が必須 */
+static const struct spi_dt_spec adc_spec = SPI_DT_SPEC_GET(
+	DT_NODELABEL(adc_ads8688),
+	SPI_OP_MODE_MASTER | SPI_MODE_CPHA | SPI_WORD_SET(32) | SPI_TRANSFER_MSB, 0);
+
+static atomic_t stat_adc_tx;		/* ADC → CAN 送信数 (フレーム) */
+
+static void adc_can_tx_cb(const struct device *dev, int error, void *user_data)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(error);
+	ARG_UNUSED(user_data);
+	/* fire-and-forget: 結果は使わない (失敗はバス側の問題で ADC は続行) */
+}
+
+
+static int ads8688_cmd(uint16_t cmd, uint16_t *out)
+{
+	/* 32bit word: 上位 16bit = コマンド、下位 16bit の応答が変換値 */
+	uint32_t tx = (uint32_t)cmd << 16;
+	uint32_t rx = 0;
+	const struct spi_buf txb = { .buf = &tx, .len = sizeof(tx) };
+	const struct spi_buf rxb = { .buf = &rx, .len = sizeof(rx) };
+	const struct spi_buf_set txs = { .buffers = &txb, .count = 1 };
+	const struct spi_buf_set rxs = { .buffers = &rxb, .count = 1 };
+	int ret = spi_transceive_dt(&adc_spec, &txs, &rxs);
+
+	if (ret == 0 && out != NULL) {
+		*out = (uint16_t)(rx & 0xFFFF);
+	}
+	return ret;
+}
+
+static int ads8688_prog_write(uint8_t addr, uint8_t val)
+{
+	uint32_t tx = ((uint32_t)(((addr << 1) | 1)) << 24) | ((uint32_t)val << 16);
+	const struct spi_buf txb = { .buf = &tx, .len = sizeof(tx) };
+	const struct spi_buf_set txs = { .buffers = &txb, .count = 1 };
+
+	return spi_write_dt(&adc_spec, &txs);
+}
+
+
+static int ads8688_init(void)
+{
+	int ret = ads8688_cmd(0x8500, NULL);	/* RST */
+
+	if (ret != 0) {
+		return ret;
+	}
+	k_msleep(1);
+	for (int ch = 0; ch < 8; ch++) {
+		ads8688_prog_write(0x05 + ch, 0x06);	/* 0..1.25*Vref = 0-5.12V */
+	}
+	ads8688_prog_write(0x01, 0xFF);		/* AUTO_SEQ_EN = 全 ch */
+	return ads8688_cmd(0xA000, NULL);	/* AUTO_RST */
+}
+
+K_THREAD_STACK_DEFINE(thread_adc_stack, 1024);
+static struct k_thread thread_adc_data;
+
+static void adc_task(void *p1, void *p2, void *p3)
+{
+	uint16_t v[8];
+
+	if (!spi_is_ready_dt(&adc_spec)) {
+		printk("can-gw: ADS8688 SPI not ready — ADC 無効で継続\n");
+		return;
+	}
+
+
+	int rc = ads8688_init();
+
+	/* mcux ECSPI は configure (MasterInit) 直後の初回転送で ISR を落とすことが
+	 * ある (実測 -116)。素直に間隔を置いてリトライする (FIFO 等へのロック外
+	 * アクセスは全システム窒息を招くので厳禁 — 実測) */
+	for (int retry = 0; rc != 0 && retry < 5; retry++) {
+		printk("can-gw: ADS8688 init rc=%d — retry %d\n", rc, retry + 1);
+		k_msleep(100);
+		rc = ads8688_init();
+	}
+	if (rc != 0) {
+		printk("can-gw: ADS8688 init rc=%d — ADC 無効で継続\n", rc);
+		return;
+	}
+	printk("can-gw: ADS8688 sampling %dHz -> CAN 0x%03x/0x%03x\n",
+	       ADC_RATE_HZ, ADC_CAN_ID_BASE, ADC_CAN_ID_BASE + 1);
+
+	while (1) {
+		for (int ch = 0; ch < 8; ch++) {
+			uint16_t cmd = (ch == 7) ? 0xA000 : 0x0000;
+
+			if (ads8688_cmd(cmd, &v[ch]) != 0) {
+				v[ch] = 0xFFFF;
+			}
+		}
+		for (int f = 0; f < 2; f++) {
+			struct can_frame frame = {
+				.id = ADC_CAN_ID_BASE + f,
+				.dlc = 8,
+			};
+
+			for (int i = 0; i < 4; i++) {
+				frame.data[2 * i] = v[4 * f + i] >> 8;
+				frame.data[2 * i + 1] = v[4 * f + i] & 0xFF;
+			}
+			/* rpmsg へ (受信フレームと同じ経路に相乗り)。can_send より
+			 * 先に行う — バスに ACK 相手が居ないと同期 can_send は
+			 * 返ってこないため (実測でここで永久ブロックした) */
+			k_msgq_put(&can_rx_q, &frame, K_NO_WAIT);
+			/* バスへは fire-and-forget (callback 付き非同期)。ACK 不在や
+			 * error passive でも adc_task を塞がない */
+			if (can_started &&
+			    can_send(can_dev, &frame, K_NO_WAIT,
+				     adc_can_tx_cb, NULL) == 0) {
+				atomic_inc(&stat_adc_tx);
+			}
+		}
+		k_sleep(K_USEC(1000000 / ADC_RATE_HZ));
+	}
+}
 
 static void can_rx_cb(const struct device *dev, struct can_frame *frame,
 		      void *user_data)
@@ -562,6 +706,11 @@ int main(void)
 			K_THREAD_STACK_SIZEOF(thread_gw_stack),
 			can_gw_task, NULL, NULL, NULL,
 			K_PRIO_COOP(7), 0, K_NO_WAIT);
+	/* ADC は CAN/rpmsg の状態と独立に回す (gw より低優先) */
+	k_thread_create(&thread_adc_data, thread_adc_stack,
+			K_THREAD_STACK_SIZEOF(thread_adc_stack),
+			adc_task, NULL, NULL, NULL,
+			K_PRIO_COOP(6), 0, K_NO_WAIT);
 
 	while (1) {
 		enum can_state state;
@@ -587,12 +736,13 @@ int main(void)
 		}
 
 		can_get_state(can_dev, &state, &errs);
-		printk("--- can->rp %ld (qdrop %ld, rpdrop %ld) | rp->can %ld (drop %ld) | peer 0x%x | started=%d state=%d tx_err=%d rx_err=%d ---\n",
+		printk("--- can->rp %ld (qdrop %ld, rpdrop %ld) | rp->can %ld (drop %ld) | adc->can %ld | peer 0x%x | started=%d state=%d tx_err=%d rx_err=%d ---\n",
 		       atomic_get(&stat_can_rx),
 		       atomic_get(&stat_can_rx_drop),
 		       atomic_get(&stat_rpmsg_drop),
 		       atomic_get(&stat_can_tx),
 		       atomic_get(&stat_can_tx_drop),
+		       atomic_get(&stat_adc_tx),
 		       (uint32_t)atomic_get(&peer_addr),
 		       can_started,
 		       state, errs.tx_err_cnt, errs.rx_err_cnt);

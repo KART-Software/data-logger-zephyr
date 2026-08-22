@@ -38,7 +38,8 @@
 			pinmux = <&iomuxc_ecspi2_sclk_ecspi_sclk_ecspi2_sclk>,
 				 <&iomuxc_ecspi2_mosi_ecspi_mosi_ecspi2_mosi>,
 				 <&iomuxc_ecspi2_miso_ecspi_miso_ecspi2_miso>,
-				 <&iomuxc_ecspi2_ss0_gpio_io_gpio5_io13>;
+				 <&iomuxc_ecspi2_ss0_gpio_io_gpio5_io13>,
+				 <&iomuxc_sai5_rxd0_gpio_io_gpio3_io21>;	/* ADS8688 CS */
 			slew-rate = "fast";
 			drive-strength = "x6";
 		};
@@ -57,7 +58,10 @@
 	status = "okay";
 	pinctrl-0 = <&ecspi2_default>;
 	pinctrl-names = "default";
-	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
+	/* reg=0: MCP2515 (CS=GPIO5_IO13) / reg=1: ADS8688 (CS=GPIO3_IO21、
+	 * 40 ピンヘッダ 15 番。carrier-board-design.md の割り付け) */
+	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>,
+		   <&gpio3 21 GPIO_ACTIVE_LOW>;
 
 	can_mcp2515: mcp2515@0 {
 		compatible = "microchip,mcp2515";
@@ -66,6 +70,16 @@
 		osc-freq = <12000000>;
 		int-gpios = <&gpio3 24 GPIO_ACTIVE_LOW>;
 		bitrate = <1000000>;
+		status = "okay";
+	};
+
+	/* raw SPI で扱う (Zephyr に ADS8688 ドライバ無し — apps/adc-test と同じ)。
+	 * 17MHz 要求 → ECSPI root 80MHz の ÷5 = 実 16MHz (チップ上限 17MHz 内)。
+	 * 実測: 16MHz でジャンパ配線でも化けゼロ (adc-test ベンチ) */
+	adc_ads8688: ads8688@1 {
+		compatible = "ti,ads8688";
+		reg = <1>;
+		spi-max-frequency = <17000000>;
 		status = "okay";
 	};
 };
