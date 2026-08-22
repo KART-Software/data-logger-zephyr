@@ -2,11 +2,11 @@
 .venv/
 
 # west workspace (west update で取得 = リポには入れない)
-.west/
-zephyr/
-modules/
-tools/
-bootloader/
+/.west/
+/zephyr/
+/modules/
+/tools/
+/bootloader/
 
 # build 成果物
 build/

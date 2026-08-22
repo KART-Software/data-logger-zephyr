@@ -15,6 +15,12 @@ CAN 受信全量を rpmsg で Linux (kmm) へ転送する。
 このリポジトリ自体が west workspace のルート (`zephyr/`・`modules/`・`.west/` は
 gitignore、`west update` で取得)。
 
+`patches/<module>/*.patch` は west モジュールへのローカルパッチ (bitbake の
+SRC_URI パッチ相当。west に標準機構が無いため `west-container.sh` が冪等適用
+する — `west update` 後も自動で当て直る)。現在は zephyr の `spi_mcux_ecspi`
+修正 2 本 (GPIO CS + reg≠0 のチャネル選択不整合で ISR が来ないバグ /
+タイムアウト時に SDK handle が busy 固着してバス全体が死ぬバグ)。upstream 報告候補。
+
 ## 開発環境
 
 - ボード: XPI-iMX8MM の Cortex-M4 (`imx8mm_evk/mimx8mm6/m4` を流用)

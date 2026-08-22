@@ -1,0 +1,37 @@
+From: kart build <kart@localhost>
+Subject: [PATCH] drivers: spi: mcux_ecspi: fix channel select for GPIO CS transfers
+
+spi_mcux_configure() writes the channel configuration (phase/polarity/
+burst) to kECSPI_Channel0 when the chip select is a GPIO, but
+spi_mcux_transfer_next_packet() selected the transfer channel from the
+devicetree reg value (spi_cfg->slave) unconditionally. For a GPIO-CS
+device with reg != 0 the transfer therefore ran on an unconfigured
+channel: data still shifted, but the RR (RXFIFO ready) status flag never
+asserted, so the ISR never fired and every transfer timed out with
+-ETIMEDOUT (observed on i.MX8MM with MCP2515 at reg=0 and ADS8688 at
+reg=1 sharing ECSPI2).
+
+Mirror the configure() logic when selecting the transfer channel.
+
+Upstream-Status: Pending [clear upstream candidate]
+---
+diff --git a/drivers/spi/spi_mcux_ecspi.c b/drivers/spi/spi_mcux_ecspi.c
+index 8138e7fdc2a..79812d87fc9 100644
+--- a/drivers/spi/spi_mcux_ecspi.c
++++ b/drivers/spi/spi_mcux_ecspi.c
+@@ -67,7 +67,14 @@ static void spi_mcux_transfer_next_packet(const struct device *dev)
+ 		return;
+ 	}
+ 
+-	transfer.channel = ctx->config->slave;
++	/* kart: must mirror spi_mcux_configure() — with a GPIO CS the channel
++	 * config (phase/polarity/burst) is written to Channel0, so the transfer
++	 * must use Channel0 too. Using config->slave (the DT reg value) here
++	 * made any GPIO-CS device with reg != 0 transfer on an unconfigured
++	 * channel: data moved but RR never asserted, so the ISR never fired
++	 * and every transfer timed out (-ETIMEDOUT). */
++	transfer.channel = spi_cs_is_gpio(ctx->config) ? kECSPI_Channel0
++						       : ctx->config->slave;
+ 
+ 	if (spi_context_rx_buf_on(ctx)) {
+ 		transfer.rxData = &data->rx_data;

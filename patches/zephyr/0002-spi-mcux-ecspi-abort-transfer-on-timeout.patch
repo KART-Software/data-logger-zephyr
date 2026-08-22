@@ -1,0 +1,36 @@
+From: kart build <kart@localhost>
+Subject: [PATCH] drivers: spi: mcux_ecspi: abort SDK transfer on completion timeout
+
+If spi_context_wait_for_completion() times out, the SDK transfer handle
+was left in the busy state, so every subsequent transfer on the bus (for
+any device) failed immediately with kStatus_ECSPI_Busy -> -EIO. A single
+timeout permanently killed the whole bus until reboot (observed on
+i.MX8MM: one failed ADS8688 transfer bricked the MCP2515 CAN gateway
+sharing ECSPI2).
+
+Abort the SDK transfer and deassert the chip select on timeout so the
+bus recovers and the caller can retry.
+
+Upstream-Status: Pending [clear upstream candidate]
+---
+diff --git a/drivers/spi/spi_mcux_ecspi.c b/drivers/spi/spi_mcux_ecspi.c
+index 8138e7fdc2a..79812d87fc9 100644
+--- a/drivers/spi/spi_mcux_ecspi.c
++++ b/drivers/spi/spi_mcux_ecspi.c
+@@ -243,6 +250,16 @@ static int transceive(const struct device *dev,
+ 
+ 	spi_mcux_transfer_next_packet(dev);
+ 	ret = spi_context_wait_for_completion(&data->ctx);
++	if (ret != 0) {
++		/* kart: on timeout the SDK handle would stay busy forever,
++		 * failing every subsequent transfer on this bus (any device)
++		 * with -EIO. Abort the transfer and deassert CS so the bus
++		 * recovers and the caller can retry. */
++		const struct spi_mcux_config *config = dev->config;
++
++		ECSPI_MasterTransferAbort(config->base, &data->handle);
++		spi_context_cs_control(&data->ctx, false);
++	}
+ 
+ out:
+ 	spi_context_release(&data->ctx, ret);
