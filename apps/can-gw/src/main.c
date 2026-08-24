@@ -317,8 +317,13 @@ static void adc_task(void *p1, void *p2, void *p3)
 			k_msgq_put(&can_rx_q, &frame, K_NO_WAIT);
 			/* バスへは fire-and-forget (callback 付き非同期)。ACK 不在や
 			 * error passive でも adc_task を塞がない */
+			/* K_MSEC(5) は「TX バッファ空き待ち」のみ (callback 方式なので
+			 * 送信完了は待たない = ACK 不在でもブロックしない)。Zephyr の
+			 * mcp2515 ドライバは TX を 1 本しか使わない (MCP2515_TX_CNT=1)
+			 * ため、K_NO_WAIT だと 0x700 の in-flight 中 (~108us@1Mbps) に
+			 * 投げる 0x701 が毎回 -EAGAIN で消えていた (2026-08-24 実測) */
 			if (can_started &&
-			    can_send(can_dev, &frame, K_NO_WAIT,
+			    can_send(can_dev, &frame, K_MSEC(5),
 				     adc_can_tx_cb, NULL) == 0) {
 				atomic_inc(&stat_adc_tx);
 			}
