@@ -156,6 +156,20 @@ static bool can_started;
 static atomic_t pending_state = ATOMIC_INIT(-1);
 static K_SEM_DEFINE(state_sem, 0, 1);
 
+/* --- INT 可観測性: MCP2515 INT (GPIO3_IO24) のエッジをドライバとは独立の
+ * callback で数え、IMR/PSR も直読みして stats に出す。gpio3 を Linux が
+ * 掴んで IMR を消す時限バグ (kmm-yocto pitfalls #31) の切り分けで導入。
+ * imr24 が 0 になったらこの類の再発 — stats 1 行で常時見張る */
+static volatile uint32_t diag_edges;
+static struct gpio_callback diag_int_cb;
+static void diag_int_edge(const struct device *dev, struct gpio_callback *cb,
+			  uint32_t pins)
+{
+	diag_edges++;
+}
+#define GPIO3_PSR (*(volatile uint32_t *)0x30220008u)
+#define GPIO3_IMR (*(volatile uint32_t *)0x30220014u)
+
 static void can_state_change_cb(const struct device *dev, enum can_state state,
 				struct can_bus_err_cnt err_cnt, void *user_data)
 {
@@ -727,6 +741,12 @@ int main(void)
 			can_gw_task, NULL, NULL, NULL,
 			K_PRIO_COOP(7), 0, K_NO_WAIT);
 	/* ADC は CAN/rpmsg の状態と独立に回す (gw より低優先) */
+	{
+		const struct device *g3 = DEVICE_DT_GET(DT_NODELABEL(gpio3));
+		gpio_init_callback(&diag_int_cb, diag_int_edge, BIT(24));
+		gpio_add_callback(g3, &diag_int_cb);
+	}
+
 	k_thread_create(&thread_adc_data, thread_adc_stack,
 			K_THREAD_STACK_SIZEOF(thread_adc_stack),
 			adc_task, NULL, NULL, NULL,
@@ -766,6 +786,10 @@ int main(void)
 		       (uint32_t)atomic_get(&peer_addr),
 		       can_started,
 		       state, errs.tx_err_cnt, errs.rx_err_cnt);
+		printk("    int-diag: edges=%u lvl=%d imr24=%d\n",
+		       diag_edges,
+		       (int)((GPIO3_PSR >> 24) & 1),
+		       (int)((GPIO3_IMR >> 24) & 1));
 	}
 	return 0;
 }
