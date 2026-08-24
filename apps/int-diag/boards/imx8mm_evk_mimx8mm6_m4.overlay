@@ -1,0 +1,53 @@
+/*
+ * XPI-iMX8MM + ADS8688 実験配線 (carrier-board-design.md の 40 ピン割り付け):
+ *   19/21/23 = ECSPI2 MOSI/MISO/SCLK (can-gw と同じ共有バス)
+ *   15 (SAI5_RXD0 = GPIO3_IO21) = ADS8688 CS   ← GPIO3 バンク = RDC 許可済み
+ *   24 (ECSPI2_SS0 = GPIO5_IO13) = MCP2515 CS  ← 共有バス同居時はデアサート必須
+ *
+ * CS はネイティブでなく GPIO 運用 (can-gw と同じ理由: mcux ECSPI はネイティブ
+ * CS だとマルチバッファ転送の途中で CS がパルスする実測問題)。
+ * SPI 5MHz / mode1 は ESP32 版 data-logger の実績値。
+ */
+/ {
+	/* MCP2515 (HAT) の CS を High に張り付けるための参照 */
+	aliases { };
+};
+
+&pinctrl {
+	ecspi2_adc: ecspi2_adc {
+		group0 {
+			pinmux = <&iomuxc_ecspi2_sclk_ecspi_sclk_ecspi2_sclk>,
+				 <&iomuxc_ecspi2_mosi_ecspi_mosi_ecspi2_mosi>,
+				 <&iomuxc_ecspi2_miso_ecspi_miso_ecspi2_miso>,
+				 <&iomuxc_sai5_rxd0_gpio_io_gpio3_io21>,	/* ADS8688 CS */
+				 <&iomuxc_ecspi2_ss0_gpio_io_gpio5_io13>;	/* MCP2515 CS (デアサート用) */
+			slew-rate = "fast";
+			drive-strength = "x6";
+		};
+	};
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+&gpio5 {
+	status = "okay";
+};
+
+&ecspi2 {
+	status = "okay";
+	pinctrl-0 = <&ecspi2_adc>;
+	pinctrl-names = "default";
+	/* reg=0 → GPIO5_IO13 (MCP2515)。int-diag は MCP2515 だけを raw SPI で読む */
+	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
+
+	/* raw SPI 扱いなので compatible はバインディング流用 (adc-test と同じ手。
+	 * CONFIG_CAN は無効なので microchip,mcp2515 でもドライバは bind しない) */
+	diag_mcp2515: mcp2515diag@0 {
+		compatible = "ti,ads8688";
+		reg = <0>;
+		spi-max-frequency = <5000000>;
+		status = "okay";
+	};
+};
