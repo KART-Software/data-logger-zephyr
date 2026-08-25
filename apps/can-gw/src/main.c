@@ -27,6 +27,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/can.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/sys/printk-hooks.h>
+#include <zephyr/sys/libc-hooks.h>
 #include <zephyr/drivers/spi.h>
 #include "kart_can.h"	/* kart-can 生成物 (can.yaml 単一ソース) */
 #include <zephyr/drivers/ipm.h>
@@ -155,6 +158,42 @@ static bool can_started;
  * ドライバ文脈で走り得るので、そこでは値を積むだけにし、main ループが送る */
 static atomic_t pending_state = ATOMIC_INIT(-1);
 static K_SEM_DEFINE(state_sem, 0, 1);
+
+/* --- コンソール tee: printk を RAM console バッファと UART4 (J64) の両方へ。
+ * RAM 側は CONFIG_RAM_CONSOLE により resource table の trace エントリとして
+ * 公開され、Linux から debugfs (remoteproc0/trace0) で読める。UART4 は
+ * Linux 不在時 (ブート極早期・Linux 死亡時) のための物理コンソールとして
+ * 残す。RAM console 標準フック (PRE_KERNEL_1) を APPLICATION でこの tee に
+ * 差し替える — それまでの分は RAM のみに入る (J64 はバナー数行を失うだけ) */
+extern char ram_console_buf[];
+static int tee_pos;
+static const struct device *tee_uart;
+
+static int console_tee_out(int c)
+{
+	ram_console_buf[tee_pos] = (char)c;
+	/* ram_console.c と同じ流儀: 末尾 1 バイトは常に NUL */
+	tee_pos = (tee_pos + 1) % (CONFIG_RAM_CONSOLE_BUFFER_SIZE - 1);
+	if (tee_uart != NULL) {
+		uart_poll_out(tee_uart, (unsigned char)c);
+	}
+	return c;
+}
+
+static int console_tee_init(void)
+{
+	tee_uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+	if (!device_is_ready(tee_uart)) {
+		tee_uart = NULL;
+	}
+	/* RAM console が書いた分の続きから (一周前なら先頭検出は不要 — init は
+	 * ブート直後の一度きりで、バッファが埋まっていることはない) */
+	tee_pos = (int)strnlen(ram_console_buf, CONFIG_RAM_CONSOLE_BUFFER_SIZE - 1);
+	__printk_hook_install(console_tee_out);
+	__stdout_hook_install(console_tee_out);
+	return 0;
+}
+SYS_INIT(console_tee_init, APPLICATION, 0);
 
 /* --- INT 可観測性: MCP2515 INT (GPIO3_IO24) のエッジをドライバとは独立の
  * callback で数え、IMR/PSR も直読みして stats に出す。gpio3 を Linux が
