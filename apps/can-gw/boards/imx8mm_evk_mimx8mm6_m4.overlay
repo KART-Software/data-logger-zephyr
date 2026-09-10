@@ -16,6 +16,7 @@
 	chosen {
 		zephyr,ipc_shm = &shram;
 		zephyr,ipc = &mailbox0;
+		zephyr,canbus = &can_mcp2515;
 	};
 
 	shram: memory@b8400000 {
