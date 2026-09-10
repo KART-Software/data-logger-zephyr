@@ -14,7 +14,7 @@
 #   BOARD=root@<ip> ./scripts/install.sh     # 接続先変更 (既定は tailnet の XPI)
 #
 # ヘッダ形式 (SPL パッチ 0011 / kart-falcon-itb.bb と一致必須):
-#   0x00 magic "K4FW" / 0x04 payload長 / 0x08 payload CRC32 / 0x0C version (各 LE32)
+#   0x00 magic "M4FW" / 0x04 payload長 / 0x08 payload CRC32 / 0x0C version (各 LE32)
 set -eu
 
 BOARD="${BOARD:-root@100.87.109.114}"
@@ -34,7 +34,7 @@ trap 'rm -f "$IMG"' EXIT
 python3 - "$BIN" "$IMG" << 'PYEOF'
 import struct, sys, time, zlib
 payload = open(sys.argv[1], 'rb').read()
-hdr = b'K4FW' + struct.pack('<III', len(payload),
+hdr = b'M4FW' + struct.pack('<III', len(payload),
                             zlib.crc32(payload) & 0xffffffff, int(time.time()))
 open(sys.argv[2], 'wb').write(hdr + payload)
 print(f"m4-fw.img: {len(payload)} bytes payload, crc32 ok")
