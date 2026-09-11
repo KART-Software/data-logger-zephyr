@@ -715,6 +715,29 @@ failed:
 	return NULL;
 }
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+/* Linux (imx_rproc) の kick = MU-A TRn 書き込みは、M7 側が MU-B RRn を読むまで
+ * 完了しない (Linux は tx_tout=100ms で待ち、err -62 で諦める)。attach 直後の
+ * 1 発がこれで 100ms 止まり、root マウント前の probe 待ちに乗って PID1 が 0.09s
+ * 遅れていた。MU 割込みは使わない方針 (上記 [MU 衝突回避]) を保ったまま、
+ * 1ms ポーリングの中で受信フルフラグを見て読み捨てる = ACK だけ返す。
+ * MU-B: 0x30ab0000 (nxp_imx8ml_m7.dtsi の mailbox0)。SR bit27-n = RFn */
+#define MUB_SR		(*(volatile uint32_t *)0x30ab0020u)
+#define MUB_RR(n)	(*(volatile uint32_t *)(0x30ab0010u + 4u * (n)))
+static inline void kart_mu_ack_rx(void)
+{
+	uint32_t sr = MUB_SR;
+
+	for (unsigned int n = 0; n < 4; n++) {
+		if (sr & (1u << (27 - n))) {
+			(void)MUB_RR(n);
+		}
+	}
+}
+#else
+static inline void kart_mu_ack_rx(void) {}
+#endif
+
 static void rpmsg_mng_task(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
@@ -738,6 +761,7 @@ static void rpmsg_mng_task(void *arg1, void *arg2, void *arg3)
 		/* MU 割込み無し運用: 1ms 周期で vring を見る (notified は
 		 * 仕事が無ければ即戻る)。CAN GW 用途にはレイテンシ十分 */
 		k_sem_take(&data_sem, K_MSEC(1));
+		kart_mu_ack_rx();
 		rproc_virtio_notified(rvdev.vdev, VRING1_ID);
 	}
 }
