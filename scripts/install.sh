@@ -13,7 +13,7 @@
 #   ./scripts/install.sh build --reboot      # 配備後にリブートまで行う
 #   BOARD=root@<ip> ./scripts/install.sh     # 接続先変更 (既定は tailnet の XPI)
 #
-# ヘッダ形式 (SPL パッチ 0011 / kart-falcon-itb.bb と一致必須):
+# ヘッダ形式 (SPL パッチ 0011 / falcon-itb.bb と一致必須):
 #   0x00 magic "M4FW" / 0x04 payload長 / 0x08 payload CRC32 / 0x0C version (各 LE32)
 set -eu
 

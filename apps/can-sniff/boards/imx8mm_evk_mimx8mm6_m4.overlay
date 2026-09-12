@@ -1,6 +1,6 @@
 /*
  * XPI-iMX8MM: ECSPI2 上の MCP2515 (現行 CAN HAT) を M4/Zephyr から使う。
- * 値は Linux 側 DT (kmm-yocto imx8mm-xpi-kart.dts) と同一:
+ * 値は Linux 側 DT (kmm-yocto imx8mm-xpi.dts) と同一:
  *   発振 12MHz / SPI 10MHz / INT = GPIO3_IO24 (level-low) / CS0 / 1Mbps
  * 前提: Linux 側で can0 down + mcp251x/spi-imx を unbind してから M4 を起動
  */

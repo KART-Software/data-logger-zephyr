@@ -2,7 +2,7 @@
  * XPI-iMX8MM: can-gw = rpmsg-echo の共有メモリ/MU 取り決め +
  * can-sniff の MCP2515 (ECSPI2) 配線の合成。
  *
- * rpmsg (Linux 側 DT imx8mm-xpi-kart.dts との取り決め):
+ * rpmsg (Linux 側 DT imx8mm-xpi.dts との取り決め):
  * - vdevbuffer 予約領域 = 0xB8400000 0x100000 (shared-dma-pool)
  *   → vring/バッファは全部この中にカーネルが確保する。ここを ipc_shm 窓に
  * - MU: A53 側 mboxes = <&mu 0 1 &mu 1 1 &mu 3 1> (idx1) — IPM ID は

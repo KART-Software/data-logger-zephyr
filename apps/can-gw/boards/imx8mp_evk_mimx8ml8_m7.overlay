@@ -17,7 +17,7 @@
  * 無いので、A53 dtsi (nxp_mimx8mp_a53.dtsi) の定義を M7 (NVIC) 形式に
  * 移して足す。IRQ 142/143 = CAN_FD1_IRQn/CAN_FD1_ERROR_IRQn (MIMX8ML8_cm7.h)。
  * CCGR ゲートは Zephyr の ccm ドライバが立てない (CAN の case 無し) ため
- * main.c の kart_m7_clocks_enable が立てる。クロックは root 既定の 24MHz osc。
+ * main.c の m7_clocks_enable が立てる。クロックは root 既定の 24MHz osc。
  */
 / {
 	chosen {
