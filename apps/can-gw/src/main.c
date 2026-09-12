@@ -1,13 +1,15 @@
 /*
- * can-gw — MCP2515 (ECSPI2) ⇄ rpmsg "kart-can" の双方向 CAN ゲートウェイ。
+ * can-gw — CAN コントローラ ⇄ rpmsg "rpmsg-can" の双方向 CAN ゲートウェイ。
+ * CAN 側は chosen zephyr,canbus (8MM/M4: MCP2515 @ ECSPI2、8MP/M7: FlexCAN1)。
+ * ボード差分は boards/*.overlay/.conf と本ファイルの SoC ガードに集約。
  *
- * Linux 側は kmm-yocto の kart-rpmsg-can モジュールが NS 告知で bind して
- * CAN netdev rpcan0 を登録する。以後 Linux アプリは SocketCAN 無修正。
+ * Linux 側は kmm-yocto の rpmsg-can モジュールが NS 告知で bind して
+ * CAN netdev rpmsgcan0 を登録する。以後 Linux アプリは SocketCAN 無修正。
  *
- *   CAN rx (ISRコールバック) → msgq → gw スレッド → rpmsg → rpcan0
- *   rpcan0 送信 → rpmsg → ept コールバック → can_send → CAN バス
+ *   CAN rx (ISRコールバック) → msgq → gw スレッド → rpmsg → rpmsgcan0
+ *   rpmsgcan0 送信 → rpmsg → ept コールバック → can_send → CAN バス
  *
- * ワイヤ形式 (kart-rpmsg-can.c と共通):
+ * ワイヤ形式 (rpmsg-can.c と共通):
  *   - データフレーム 16B: { uint32 id; uint8 dlc; uint8 pad[3]; uint8 data[8] } (LE)
  *     id は Linux canid_t の慣例 (bit31=EFF, bit30=RTR)。
  *   - 制御メッセージ 8B: { uint8 magic=0xC7; uint8 cmd; uint8 flags; uint8 rsvd;
@@ -44,7 +46,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(can_gw);
 
-/* 前提 (RDC): M4 が使うペリフェラル (ECSPI2/GPIO3/GPIO5) は、M4 起動前に
+/* [8MM] 前提 (RDC): M4 が使うペリフェラル (ECSPI2/GPIO3/GPIO5) は、M4 起動前に
  * Linux (domain0) 側から RDC PDAP を M4 専用 (0x0C) に設定しておくこと。
  * 共有 (0xFF) のままだと、MU/IPM を含むビルドではペリフェラル READ が
  * バスエラー → SoC ハードリセットになる (実測)。M4 自身からの RDC 書込は
@@ -58,6 +60,7 @@ LOG_MODULE_REGISTER(can_gw);
 #error "can-gw requires definition of shared memory for rpmsg"
 #endif
 
+#if defined(CONFIG_SOC_MIMX8MM6)
 /* ---- ECSPI2 クロックを M4 自身で enable ----
  * Linux 側 DT は ecspi2 を disabled にした (M4 譲渡)。i.MX8MM の CCGR は
  * 4bit/domain のドメイン別要求フィールドで、domain0 (Linux) の devmem では
@@ -68,13 +71,13 @@ LOG_MODULE_REGISTER(can_gw);
  * 自ドメインのフィールドに有効。ECSPI ドライバ init (banner 前) より先に
  * 走るよう PRE_KERNEL_1 priority 0 で行う。
  * TARGET_ROOT は Linux 側 (mcore_booted=1 + clk_ignore_unused) が enable を
- * 維持する取り決め (kmm-yocto imx8mm-xpi-kart.dts のコメント参照)。 */
+ * 維持する取り決め (kmm-yocto imx8mm-xpi.dts のコメント参照)。 */
 #define CCM_CCGR_ECSPI2_SET  0x30384084u	/* CCGR (0x4080) の SET */
 #define CCM_CCGR_GPIO3_SET   0x303840D4u	/* CCGR (0x40D0) の SET */
 #define CCM_CCGR_GPIO5_SET   0x303840F4u	/* CCGR (0x40F0) の SET */
 #define CCM_CCGR_UART4_SET   0x303844C4u	/* CCGR76 (0x44C0) の SET — kmm-yocto pitfalls #25 実測 */
 
-static int kart_m4_clocks_enable(void)
+static int m4_clocks_enable(void)
 {
 	/* clk-test (kmm-yocto m4/clk-test) での実測: M4 write は domain1
 	 * フィールドのみに効き (0x3333 → 読み値 0x30)、これで ECSPI2 read が
@@ -93,7 +96,36 @@ static int kart_m4_clocks_enable(void)
 	*(volatile uint32_t *)0x30830008u = 0;
 	return 0;
 }
-SYS_INIT(kart_m4_clocks_enable, PRE_KERNEL_1, 0);
+SYS_INIT(m4_clocks_enable, PRE_KERNEL_1, 0);
+
+#elif defined(CONFIG_SOC_MIMX8ML8)
+/* ---- FlexCAN1 クロックを M7 自身で enable (8MP) ----
+ * Zephyr の ccm ドライバ (mcux_ccm_on) は CAN の CCGR ゲートを立てない
+ * (case が無く素通り)。Linux 側 DT では flexcan1 を M7 譲渡で disabled に
+ * する予定のため誰も立てず、FlexCAN ドライバ init のレジスタアクセスで
+ * 止まる。8MM の CCGR 対応と同じく M7 自身で立てる。
+ *
+ * [falcon 対応 2026-09-10] CCGR ゲートだけでは不足。CAN1 クロック *root*
+ * (CCM TARGET_ROOT @ 0x3038a200) の enable まで自前で立てる必要がある。
+ * remoteproc 経路では U-Boot proper が root を立てていたが、falcon
+ * (SPL→BL31→カーネル直行) では U-Boot proper を飛ばすため root が
+ * 未 enable のまま (実機実測 0x00000000)。この状態で FlexCAN ドライバが
+ * init すると get_rate は 24MHz を返すのに実クロックは 0Hz で、bit timing
+ * が狂い CAN が一切通らない (実機: can0 RX=0)。root を enable + mux=0
+ * (24MHz osc) + div=0 = 0x10000000 で立てる (ccm get_rate=24MHz と一致)。*/
+#include <fsl_clock.h>
+
+#define CCM_CAN1_CLK_ROOT	0x3038a200u	/* CCM TARGET_ROOT CAN1 (imx8mp) */
+#define CCM_ROOT_EN_OSC24M	0x10000000u	/* bit28 enable, mux[26:24]=0 (osc_24m), div=0 */
+
+static int m7_clocks_enable(void)
+{
+	*(volatile uint32_t *)CCM_CAN1_CLK_ROOT = CCM_ROOT_EN_OSC24M;
+	CLOCK_EnableClock(kCLOCK_Can1);
+	return 0;
+}
+SYS_INIT(m7_clocks_enable, PRE_KERNEL_1, 0);
+#endif /* SoC */
 
 #if CONFIG_IPM_MAX_DATA_SIZE > 0
 #define IPM_SEND(dev, w, id, d, s) ipm_send(dev, w, id, d, s)
@@ -105,9 +137,17 @@ SYS_INIT(kart_m4_clocks_enable, PRE_KERNEL_1, 0);
 #define SHM_START_ADDR	DT_REG_ADDR(SHM_NODE)
 #define SHM_SIZE	DT_REG_SIZE(SHM_NODE)
 
+/* imx_rproc のライブテーブル先 (Linux DT の rsc-table 予約領域)。
+ * 8MM: 0xB80FF000 / 8MP: 0x550FF000 (kmm-yocto docs/imx8mp-debix-bringup/01-m7.md) */
+#if defined(CONFIG_SOC_MIMX8ML8)
+#define RSC_TABLE_ADDR	0x550FF000UL
+#else
+#define RSC_TABLE_ADDR	0xB80FF000UL
+#endif
+
 /* ---- ワイヤ形式と Linux canid_t フラグ ---- */
 
-struct kart_rpmsg_wire {
+struct rpmsg_can_wire {
 	uint32_t id;
 	uint8_t dlc;
 	uint8_t pad[3];
@@ -119,20 +159,20 @@ struct kart_rpmsg_wire {
 #define LINUX_CAN_EFF_MASK 0x1FFFFFFFU
 #define LINUX_CAN_SFF_MASK 0x000007FFU
 
-/* ---- 制御メッセージ (kart-rpmsg-can.c と共通、8B。16B フレームと長さで区別) ----
+/* ---- 制御メッセージ (rpmsg-can.c と共通、8B。16B フレームと長さで区別) ----
  * Linux 側 candev の netlink 設定 (bitrate/mode) と up/down をここへ流す。
  * enum can_state は Zephyr と Linux で値が一致 (ACTIVE=0/WARN=1/PASSIVE=2/
  * BUS_OFF=3/STOPPED=4/SLEEPING=5) なので EVT_STATE は arg をそのまま渡す。 */
-#define KART_RPMSG_CTRL_MAGIC 0xC7
+#define RPMSG_CAN_CTRL_MAGIC 0xC7
 enum {
-	KART_RPMSG_CMD_SET_BITRATE = 1,	/* Linux→M4: arg = bitrate [bps] */
-	KART_RPMSG_CMD_SET_MODE    = 2,	/* Linux→M4: flags = mode ビット */
-	KART_RPMSG_CMD_START       = 3,	/* Linux→M4: CAN 起動 (ip link up) */
-	KART_RPMSG_CMD_STOP        = 4,	/* Linux→M4: CAN 停止 (ip link down) */
-	KART_RPMSG_EVT_STATE       = 5,	/* M4→Linux: arg = enum can_state */
+	RPMSG_CAN_CMD_SET_BITRATE = 1,	/* Linux→M4: arg = bitrate [bps] */
+	RPMSG_CAN_CMD_SET_MODE    = 2,	/* Linux→M4: flags = mode ビット */
+	RPMSG_CAN_CMD_START       = 3,	/* Linux→M4: CAN 起動 (ip link up) */
+	RPMSG_CAN_CMD_STOP        = 4,	/* Linux→M4: CAN 停止 (ip link down) */
+	RPMSG_CAN_EVT_STATE       = 5,	/* M4→Linux: arg = enum can_state */
 };
 
-struct kart_rpmsg_ctrl {
+struct rpmsg_can_ctrl {
 	uint8_t magic;
 	uint8_t cmd;
 	uint8_t flags;
@@ -140,13 +180,14 @@ struct kart_rpmsg_ctrl {
 	uint32_t arg;
 } __packed;
 
-#define KART_RPMSG_MODE_LISTENONLY (1u << 0)
-#define KART_RPMSG_MODE_LOOPBACK   (1u << 1)
+#define RPMSG_CAN_MODE_LISTENONLY (1u << 0)
+#define RPMSG_CAN_MODE_LOOPBACK   (1u << 1)
 
 /* ---- CAN ---- */
 
+/* CAN コントローラは chosen で選ぶ (8MM: &can_mcp2515 / 8MP: &flexcan1) */
 static const struct device *const can_dev =
-	DEVICE_DT_GET(DT_NODELABEL(can_mcp2515));
+	DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 
 K_MSGQ_DEFINE(can_rx_q, sizeof(struct can_frame), 64, 4);
 
@@ -195,6 +236,7 @@ static int console_tee_init(void)
 }
 SYS_INIT(console_tee_init, APPLICATION, 0);
 
+#if defined(CONFIG_SOC_MIMX8MM6)
 /* --- INT 可観測性: MCP2515 INT (GPIO3_IO24) のエッジをドライバとは独立の
  * callback で数え、IMR/PSR も直読みして stats に出す。gpio3 を Linux が
  * 掴んで IMR を消す時限バグ (kmm-yocto pitfalls #31) の切り分けで導入。
@@ -208,6 +250,7 @@ static void diag_int_edge(const struct device *dev, struct gpio_callback *cb,
 }
 #define GPIO3_PSR (*(volatile uint32_t *)0x30220008u)
 #define GPIO3_IMR (*(volatile uint32_t *)0x30220014u)
+#endif /* CONFIG_SOC_MIMX8MM6 */
 
 static void can_state_change_cb(const struct device *dev, enum can_state state,
 				struct can_bus_err_cnt err_cnt, void *user_data)
@@ -227,6 +270,11 @@ static atomic_t stat_rpmsg_drop;	/* rpmsg TX バッファ枯渇ドロップ */
 static atomic_t stat_can_tx;		/* rpmsg → CAN 送信数 */
 static atomic_t stat_can_tx_drop;	/* can_send 失敗 */
 
+static atomic_t stat_adc_tx;	/* ADC → CAN 送信数 (ADC 無し構成では常に 0) */
+
+/* ADS8688 はキャリアボード側の載せ替え対象なので DT ノードの有無で分岐する
+ * (8MP は M7 に何を持たせるかの設計判断待ち — overlay にノードを足せば有効) */
+#if DT_NODE_EXISTS(DT_NODELABEL(adc_ads8688))
 /* ---- ADS8688 (8ch 16bit ADC、ECSPI2 の 2 個目の CS) ----
  *
  * raw SPI で叩く (Zephyr にドライバ無し)。手順・整列は ESP32 版 data-logger
@@ -247,8 +295,6 @@ static atomic_t stat_can_tx_drop;	/* can_send 失敗 */
 static const struct spi_dt_spec adc_spec = SPI_DT_SPEC_GET(
 	DT_NODELABEL(adc_ads8688),
 	SPI_OP_MODE_MASTER | SPI_MODE_CPHA | SPI_WORD_SET(32) | SPI_TRANSFER_MSB, 0);
-
-static atomic_t stat_adc_tx;		/* ADC → CAN 送信数 (フレーム) */
 
 static void adc_can_tx_cb(const struct device *dev, int error, void *user_data)
 {
@@ -384,6 +430,7 @@ static void adc_task(void *p1, void *p2, void *p3)
 		k_sleep(K_USEC(1000000 / ADC_RATE_HZ));
 	}
 }
+#endif /* DT_NODE_EXISTS(adc_ads8688) */
 
 static void can_rx_cb(const struct device *dev, struct can_frame *frame,
 		      void *user_data)
@@ -432,12 +479,12 @@ static void platform_ipm_callback(const struct device *dev, void *context,
 /* Linux (candev) からの制御メッセージを CAN コントローラへ反映する。
  * mng スレッド文脈から呼ばれる (CAN API 呼び出しは可)。設定は ip link up 時の
  * 数発だけなので、ここで can_stop/start しても vring 処理への影響は軽微 */
-static void kart_rpmsg_handle_ctrl(const struct kart_rpmsg_ctrl *c)
+static void rpmsg_can_handle_ctrl(const struct rpmsg_can_ctrl *c)
 {
 	int ret;
 
 	switch (c->cmd) {
-	case KART_RPMSG_CMD_SET_BITRATE:
+	case RPMSG_CAN_CMD_SET_BITRATE:
 		if (can_started) {
 			can_stop(can_dev);
 			can_started = false;
@@ -445,13 +492,13 @@ static void kart_rpmsg_handle_ctrl(const struct kart_rpmsg_ctrl *c)
 		ret = can_set_bitrate(can_dev, c->arg);
 		printk("can-gw: set_bitrate %u rc=%d\n", c->arg, ret);
 		break;
-	case KART_RPMSG_CMD_SET_MODE: {
+	case RPMSG_CAN_CMD_SET_MODE: {
 		can_mode_t mode = CAN_MODE_NORMAL;
 
-		if (c->flags & KART_RPMSG_MODE_LISTENONLY) {
+		if (c->flags & RPMSG_CAN_MODE_LISTENONLY) {
 			mode |= CAN_MODE_LISTENONLY;
 		}
-		if (c->flags & KART_RPMSG_MODE_LOOPBACK) {
+		if (c->flags & RPMSG_CAN_MODE_LOOPBACK) {
 			mode |= CAN_MODE_LOOPBACK;
 		}
 		if (can_started) {
@@ -462,14 +509,14 @@ static void kart_rpmsg_handle_ctrl(const struct kart_rpmsg_ctrl *c)
 		printk("can-gw: set_mode 0x%x rc=%d\n", (unsigned int)mode, ret);
 		break;
 	}
-	case KART_RPMSG_CMD_START:
+	case RPMSG_CAN_CMD_START:
 		if (!can_started) {
 			ret = can_start(can_dev);
 			can_started = (ret == 0);
 			printk("can-gw: start rc=%d\n", ret);
 		}
 		break;
-	case KART_RPMSG_CMD_STOP:
+	case RPMSG_CAN_CMD_STOP:
 		if (can_started) {
 			can_stop(can_dev);
 			can_started = false;
@@ -484,17 +531,17 @@ static void kart_rpmsg_handle_ctrl(const struct kart_rpmsg_ctrl *c)
 static int rpmsg_recv_can_callback(struct rpmsg_endpoint *ept, void *data,
 				   size_t len, uint32_t src, void *priv)
 {
-	struct kart_rpmsg_wire w;
+	struct rpmsg_can_wire w;
 	struct can_frame frame = {0};
 	int ret;
 
 	atomic_set(&peer_addr, (atomic_val_t)src);
 
-	if (len == sizeof(struct kart_rpmsg_ctrl)) {	/* 制御メッセージ (8B) */
-		const struct kart_rpmsg_ctrl *c = data;
+	if (len == sizeof(struct rpmsg_can_ctrl)) {	/* 制御メッセージ (8B) */
+		const struct rpmsg_can_ctrl *c = data;
 
-		if (c->magic == KART_RPMSG_CTRL_MAGIC) {
-			kart_rpmsg_handle_ctrl(c);
+		if (c->magic == RPMSG_CAN_CTRL_MAGIC) {
+			rpmsg_can_handle_ctrl(c);
 		}
 		return RPMSG_SUCCESS;
 	}
@@ -537,7 +584,7 @@ int mailbox_notify(void *priv, uint32_t id)
 {
 	ARG_UNUSED(priv);
 
-	/* kart: Linux 側 (imx_rproc) の mboxes は MU レジスタ index 1 固定
+	/* Linux 側 (imx_rproc) の mboxes は MU レジスタ index 1 固定
 	 * (<&mu 1 1>)。OpenAMP が渡してくる id (= カーネルが採番した
 	 * notifyid 0/1) をチャネル番号に使うと TR[0] 行きになり Linux に
 	 * 届かない (実測 — MU 割込ゼロ)。チャネルは 1 に固定し、id は
@@ -566,8 +613,8 @@ static int platform_init(void)
 
 	rsc_table_get(&linked_rsc, &rsc_size);
 
-	/* kart: imx_rproc は「ライブテーブル」を Linux DT の rsc-table 予約
-	 * 領域 (0xB80FF000) に置く (ELF から解析したテーブルをそこへコピーし、
+	/* imx_rproc は「ライブテーブル」を Linux DT の rsc-table 予約
+	 * 領域 (RSC_TABLE_ADDR: 8MM 0xB80FF000 / 8MP 0x550FF000) に置く (ELF から解析したテーブルをそこへコピーし、
 	 * status=DRIVER_OK と vring 実アドレスの書き戻しもそこに行く)。
 	 * イメージ内のテーブルを読むと da=-1/status=0 のままで永遠に待つ
 	 * (実測)。リンク済みテーブルは ELF 解析用に残しつつ、実行時は
@@ -584,10 +631,11 @@ static int platform_init(void)
 	 * 判定: 先頭 u32 = テーブル version。有効 (==1) なら Linux が既に書いた
 	 * (LOAD) ので上書きしない (Linux が書き戻す vring da を潰さないため)。
 	 * 無効なら attach なので M4 が publish する。 */
-	rsc_table = (void *)0xB80FF000UL;
+	rsc_table = (void *)RSC_TABLE_ADDR;
 	if (*(volatile uint32_t *)rsc_table != 1u) {
 		memcpy(rsc_table, linked_rsc, rsc_size);
-		LOG_INF("rsc_table published to 0xB80FF000 (attach mode)");
+		LOG_INF("rsc_table published to %lx (attach mode)",
+			(unsigned long)RSC_TABLE_ADDR);
 	}
 	rsc_tab_physmap = (uintptr_t)rsc_table;
 
@@ -667,6 +715,29 @@ failed:
 	return NULL;
 }
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+/* Linux (imx_rproc) の kick = MU-A TRn 書き込みは、M7 側が MU-B RRn を読むまで
+ * 完了しない (Linux は tx_tout=100ms で待ち、err -62 で諦める)。attach 直後の
+ * 1 発がこれで 100ms 止まり、root マウント前の probe 待ちに乗って PID1 が 0.09s
+ * 遅れていた。MU 割込みは使わない方針 (上記 [MU 衝突回避]) を保ったまま、
+ * 1ms ポーリングの中で受信フルフラグを見て読み捨てる = ACK だけ返す。
+ * MU-B: 0x30ab0000 (nxp_imx8ml_m7.dtsi の mailbox0)。SR bit27-n = RFn */
+#define MUB_SR		(*(volatile uint32_t *)0x30ab0020u)
+#define MUB_RR(n)	(*(volatile uint32_t *)(0x30ab0010u + 4u * (n)))
+static inline void mu_ack_rx(void)
+{
+	uint32_t sr = MUB_SR;
+
+	for (unsigned int n = 0; n < 4; n++) {
+		if (sr & (1u << (27 - n))) {
+			(void)MUB_RR(n);
+		}
+	}
+}
+#else
+static inline void mu_ack_rx(void) {}
+#endif
+
 static void rpmsg_mng_task(void *arg1, void *arg2, void *arg3)
 {
 	ARG_UNUSED(arg1);
@@ -690,6 +761,7 @@ static void rpmsg_mng_task(void *arg1, void *arg2, void *arg3)
 		/* MU 割込み無し運用: 1ms 周期で vring を見る (notified は
 		 * 仕事が無ければ即戻る)。CAN GW 用途にはレイテンシ十分 */
 		k_sem_take(&data_sem, K_MSEC(1));
+		mu_ack_rx();
 		rproc_virtio_notified(rvdev.vdev, VRING1_ID);
 	}
 }
@@ -701,13 +773,13 @@ static void can_gw_task(void *arg1, void *arg2, void *arg3)
 	ARG_UNUSED(arg3);
 
 	struct can_frame frame;
-	struct kart_rpmsg_wire w;
+	struct rpmsg_can_wire w;
 	int ret;
 
 	k_sem_take(&rpdev_ready_sem, K_FOREVER);
 
-	/* NS 告知 → Linux 側で kart-rpmsg-can が probe → rpcan0 登録 */
-	ret = rpmsg_create_ept(&can_ept, rpdev, "kart-can",
+	/* NS 告知 → Linux 側で rpmsg-can が probe → rpmsgcan0 登録 */
+	ret = rpmsg_create_ept(&can_ept, rpdev, "rpmsg-can",
 			       RPMSG_ADDR_ANY, RPMSG_ADDR_ANY,
 			       rpmsg_recv_can_callback, NULL);
 	if (ret) {
@@ -758,7 +830,7 @@ int main(void)
 	};
 	int ret;
 
-	printk("kart M4: can-gw (MCP2515 @ ECSPI2 1Mbps <-> rpmsg kart-can)\n");
+	printk("kart can-gw: %s <-> rpmsg kart-can\n", can_dev->name);
 
 	if (!device_is_ready(can_dev)) {
 		printk("CAN device NOT ready\n");
@@ -779,17 +851,21 @@ int main(void)
 			K_THREAD_STACK_SIZEOF(thread_gw_stack),
 			can_gw_task, NULL, NULL, NULL,
 			K_PRIO_COOP(7), 0, K_NO_WAIT);
-	/* ADC は CAN/rpmsg の状態と独立に回す (gw より低優先) */
+#if defined(CONFIG_SOC_MIMX8MM6)
 	{
 		const struct device *g3 = DEVICE_DT_GET(DT_NODELABEL(gpio3));
 		gpio_init_callback(&diag_int_cb, diag_int_edge, BIT(24));
 		gpio_add_callback(g3, &diag_int_cb);
 	}
+#endif
 
+#if DT_NODE_EXISTS(DT_NODELABEL(adc_ads8688))
+	/* ADC は CAN/rpmsg の状態と独立に回す (gw より低優先) */
 	k_thread_create(&thread_adc_data, thread_adc_stack,
 			K_THREAD_STACK_SIZEOF(thread_adc_stack),
 			adc_task, NULL, NULL, NULL,
 			K_PRIO_COOP(6), 0, K_NO_WAIT);
+#endif
 
 	while (1) {
 		enum can_state state;
@@ -802,9 +878,9 @@ int main(void)
 			uint32_t peer = (uint32_t)atomic_get(&peer_addr);
 
 			if (st >= 0 && peer != (uint32_t)-1) {
-				struct kart_rpmsg_ctrl e = {
-					.magic = KART_RPMSG_CTRL_MAGIC,
-					.cmd = KART_RPMSG_EVT_STATE,
+				struct rpmsg_can_ctrl e = {
+					.magic = RPMSG_CAN_CTRL_MAGIC,
+					.cmd = RPMSG_CAN_EVT_STATE,
 					.arg = (uint32_t)st,
 				};
 
@@ -825,10 +901,12 @@ int main(void)
 		       (uint32_t)atomic_get(&peer_addr),
 		       can_started,
 		       state, errs.tx_err_cnt, errs.rx_err_cnt);
+#if defined(CONFIG_SOC_MIMX8MM6)
 		printk("    int-diag: edges=%u lvl=%d imr24=%d\n",
 		       diag_edges,
 		       (int)((GPIO3_PSR >> 24) & 1),
 		       (int)((GPIO3_IMR >> 24) & 1));
+#endif
 	}
 	return 0;
 }

@@ -14,7 +14,7 @@
 
 int main(void)
 {
-	printk("kart M4: sctr-mu-test start (MU enabled, reading SCTR)\n");
+	printk("M4: sctr-mu-test start (MU enabled, reading SCTR)\n");
 
 	unsigned int n = 0;
 	for (;;) {

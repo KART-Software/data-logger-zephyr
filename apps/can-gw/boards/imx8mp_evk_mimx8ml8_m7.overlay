@@ -1,0 +1,63 @@
+/*
+ * DEBIX Infinity (i.MX8MP) M7: can-gw = FlexCAN1 (SoC 内蔵) ⇄ rpmsg。
+ * 8MM (MCP2515/ECSPI) との差分はここと board conf に集約し、main.c は
+ * chosen zephyr,canbus / SoC ガードで共通化してある。
+ *
+ * rpmsg (Linux 側 DT との取り決め — kmm-yocto/docs/imx8mp-debix-bringup/01-m7.md):
+ * - vdevbuffer 予約領域 = 0x55400000 0x100000 (shared-dma-pool) → ipc_shm 窓
+ *   (vring 0x55000000/0x55008000、rsc_table 0x550FF000 は main.c の per-SoC 定数)
+ * - MU: Linux 側 mboxes = <&mu 0 1 &mu 1 1 &mu 3 1> (idx1) — 8MM と同じ取り決め、
+ *   IPM ID は board conf 側で合わせる
+ *
+ * CAN1 ピンは DEBIX J2 Pin31/33 = SAI5_RXD1/RXD2 (Linux 側 imx8mp-debix.dts と
+ * 同一 pinmux・同一パッド設定)。CAN トランシーバはボード外 (CA-IS3050G
+ * モジュール等、J2 は 3.3V TXD/RXD) なので phys (can-transceiver-gpio) は無し。
+ *
+ * flexcan1 ノード: upstream の M7 dtsi (nxp_imx8ml_m7.dtsi) には CAN ノードが
+ * 無いので、A53 dtsi (nxp_mimx8mp_a53.dtsi) の定義を M7 (NVIC) 形式に
+ * 移して足す。IRQ 142/143 = CAN_FD1_IRQn/CAN_FD1_ERROR_IRQn (MIMX8ML8_cm7.h)。
+ * CCGR ゲートは Zephyr の ccm ドライバが立てない (CAN の case 無し) ため
+ * main.c の m7_clocks_enable が立てる。クロックは root 既定の 24MHz osc。
+ */
+/ {
+	chosen {
+		zephyr,ipc_shm = &shram;
+		zephyr,ipc = &mailbox0;
+		zephyr,canbus = &flexcan1;
+	};
+
+	shram: memory@55400000 {
+		compatible = "mmio-sram";
+		reg = <0x55400000 0x100000>;
+	};
+
+	soc {
+		flexcan1: can@308c0000 {
+			compatible = "nxp,flexcan-fd", "nxp,flexcan";
+			reg = <0x308c0000 0x10000>;
+			interrupts = <142 3>, <143 3>;
+			interrupt-names = "common", "error";
+			clocks = <&ccm IMX_CCM_CAN1_CLK 0x68 14>;
+			clk-source = <0>;
+			pinctrl-0 = <&flexcan1_default>;
+			pinctrl-names = "default";
+			status = "okay";
+		};
+	};
+};
+
+&mailbox0 {
+	status = "okay";
+};
+
+&pinctrl {
+	flexcan1_default: flexcan1_default {
+		group0 {
+			pinmux = <&iomuxc_sai5_rxd1_can_tx_can1_tx>,
+				 <&iomuxc_sai5_rxd2_can_rx_can1_rx>;
+			bias-pull-up;
+			slew-rate = "fast";
+			drive-strength = "x2";
+		};
+	};
+};

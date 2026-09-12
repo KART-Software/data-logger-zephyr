@@ -10,7 +10,7 @@ int main(void)
 {
 	int tick = 0;
 
-	printk("kart M4: hello from Zephyr %s\n", KERNEL_VERSION_STRING);
+	printk("M4: hello from Zephyr %s\n", KERNEL_VERSION_STRING);
 
 	while (1) {
 		k_sleep(K_SECONDS(1));

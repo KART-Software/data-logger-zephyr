@@ -32,7 +32,7 @@
 #define CCM_CCGR_GPIO5_SET   0x303840F4u
 #define CCM_CCGR_UART4_SET   0x303844C4u
 
-static int kart_m4_clocks_enable(void)
+static int m4_clocks_enable(void)
 {
 	*(volatile uint32_t *)CCM_CCGR_ECSPI2_SET = 0x3333;
 	*(volatile uint32_t *)CCM_CCGR_GPIO3_SET = 0x3333;
@@ -46,7 +46,7 @@ static int kart_m4_clocks_enable(void)
 	*(volatile uint32_t *)0x30830008u = 0;
 	return 0;
 }
-SYS_INIT(kart_m4_clocks_enable, PRE_KERNEL_1, 0);
+SYS_INIT(m4_clocks_enable, PRE_KERNEL_1, 0);
 
 /* mode1 = CPHA。8bit word・MSB first。CS は cs-gpios (GPIO3_IO21) 任せ */
 static const struct spi_dt_spec adc = SPI_DT_SPEC_GET(
@@ -105,7 +105,7 @@ int main(void)
 	int ret;
 
 	DBG[0] = 0xADC00001;
-	printk("kart M4: adc-test (ADS8688 @ ECSPI2 CS=GPIO3_IO21, 5MHz mode1)\n");
+	printk("M4: adc-test (ADS8688 @ ECSPI2 CS=GPIO3_IO21, 5MHz mode1)\n");
 
 	/* 共有バス上の MCP2515 (HAT) をデアサート (CS=GPIO5_IO13 を High) */
 	if (device_is_ready(gpio5)) {

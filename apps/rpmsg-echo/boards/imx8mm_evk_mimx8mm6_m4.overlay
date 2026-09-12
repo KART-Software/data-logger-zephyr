@@ -1,5 +1,5 @@
 /*
- * XPI-iMX8MM: Linux 側 DT (kmm-yocto imx8mm-xpi-kart.dts) との取り決め:
+ * XPI-iMX8MM: Linux 側 DT (kmm-yocto imx8mm-xpi.dts) との取り決め:
  * - vdevbuffer 予約領域 = 0xB8400000 0x100000 (shared-dma-pool)
  *   → vring/バッファは全部この中にカーネルが確保する (Zephyr 側の
  *     リソーステーブルは da=-1 でホスト任せ)。ここを ipc_shm 窓にする

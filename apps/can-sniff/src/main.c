@@ -30,7 +30,7 @@ int main(void)
 	};
 	int ret;
 
-	printk("kart M4: can-sniff (MCP2515 @ ECSPI2, 1Mbps)\n");
+	printk("M4: can-sniff (MCP2515 @ ECSPI2, 1Mbps)\n");
 
 	if (!device_is_ready(can_dev)) {
 		printk("CAN device NOT ready\n");

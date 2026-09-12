@@ -141,7 +141,7 @@ int mailbox_notify(void *priv, uint32_t id)
 	ARG_UNUSED(priv);
 
 	LOG_DBG("%s: msg received", __func__);
-	/* kart: Linux 側 (imx_rproc) の mboxes は MU レジスタ index 1 固定
+	/* Linux 側 (imx_rproc) の mboxes は MU レジスタ index 1 固定
 	 * (<&mu 1 1>)。OpenAMP が渡してくる id (= カーネルが採番した
 	 * notifyid 0/1) をチャネル番号に使うと TR[0] 行きになり Linux に
 	 * 届かない (実測 — MU 割込ゼロ)。チャネルは 1 に固定し、id は
@@ -170,7 +170,7 @@ int platform_init(void)
 	/* declare resource table region */
 	rsc_table_get(&rsc_table, &rsc_size);
 
-	/* kart: imx_rproc は「ライブテーブル」を Linux DT の rsc-table 予約領域
+	/* imx_rproc は「ライブテーブル」を Linux DT の rsc-table 予約領域
 	 * (0xB80FF000) に置く (ELF から解析したテーブルをそこへコピーし、
 	 * status=DRIVER_OK と vring 実アドレスの書き戻しもそこに行う)。
 	 * イメージ内のテーブルを読むと da=-1/status=0 のままで永遠に待つ

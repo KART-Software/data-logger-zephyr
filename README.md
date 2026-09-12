@@ -32,7 +32,7 @@ SRC_URI パッチ相当。west に標準機構が無いため `west-container.sh
 
 | アプリ | 用途 |
 |--------|------|
-| `can-gw` | **本命**。MCP2515 (ECSPI2) ⇄ rpmsg "kart-can" の双方向 CAN ゲートウェイ。Linux 側は kmm-yocto の `kart-rpmsg-can` が bind し `can0` を生やす |
+| `can-gw` | **本命**。CAN コントローラ (8MM: MCP2515 @ ECSPI2 / 8MP: FlexCAN1) ⇄ rpmsg "rpmsg-can" の双方向 CAN ゲートウェイ。Linux 側は kmm-yocto の `rpmsg-can` モジュールが bind し `rpmsgcan0` を生やす |
 | `can-sniff` | MCP2515 (ECSPI2) で CAN 受信 → UART4 (J64) 表示の疎通確認 |
 | `rpmsg-echo` | rpmsg 疎通確認 (Zephyr の openamp_rsc_table サンプル構成) |
 | `gpio-mu-test` | MU (IPM) + GPIO のみの最小構成。MU 受信 × ペリフェラル read の SoC リセット切り分け用 |
@@ -87,8 +87,8 @@ ssh root@<XPI> 'mount -o remount,rw /; cp /tmp/zephyr.elf /lib/firmware/; mount 
 ```
 
 falcon SPL loadable + BL31 先住起動 (M4 が Linux より前に走り、Linux は attach) は
-kmm-yocto の `kas/imx8mm-m4.yml` を参照。M4 バイナリ (`zephyr.bin`) を kmm-yocto の
-`kart-falcon-itb` レシピに同梱する。
+kmm-yocto の `kas/imx8mm-m4.yml` (8MP は `kas/imx8mp-m7.yml`) を参照。バイナリ (`zephyr.bin`) を
+kmm-yocto の `falcon-itb` レシピに同梱する。
 
 注意 (kmm-yocto/docs/imx8mm-xpi-bringup/04-pitfalls.md 参照):
 - firmware_class の path パラメータは使わない (#24 の顛末) — /lib/firmware に置く
