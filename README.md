@@ -15,6 +15,10 @@ CAN 受信全量を rpmsg で Linux (kmm) へ転送する。
 このリポジトリ自体が west workspace のルート (`zephyr/`・`modules/`・`.west/` は
 gitignore、`west update` で取得)。
 
+`zephyr-modules/` はこのリポで保守する Zephyr モジュール (west 取得の `modules/` とは別)。
+現在は ADS868x ADC ドライバ (`zephyr-modules/ads868x`、upstream PR 前提の配置。詳細は
+その README)。使うアプリが `CMakeLists.txt` の `EXTRA_ZEPHYR_MODULES` で読み込む。
+
 `patches/<module>/*.patch` は west モジュールへのローカルパッチ (bitbake の
 SRC_URI パッチ相当。west に標準機構が無いため `west-container.sh` が冪等適用
 する — `west update` 後も自動で当て直る)。現在は zephyr の `spi_mcux_ecspi`
@@ -37,6 +41,8 @@ SRC_URI パッチ相当。west に標準機構が無いため `west-container.sh
 | `rpmsg-echo` | rpmsg 疎通確認 (Zephyr の openamp_rsc_table サンプル構成) |
 | `gpio-mu-test` | MU (IPM) + GPIO のみの最小構成。MU 受信 × ペリフェラル read の SoC リセット切り分け用 |
 | `hello-world` | UART4 printk 疎通の最小雛形 |
+| `adc-test` | ADS8688 (16bit 8ch ADC) を raw SPI で叩く疎通/スループット確認 (8MM: ECSPI2 / 8MP: ECSPI1 @ J2)。AUTO_RST 巡回で 59 kSPS |
+| `adc-dt` | `zephyr-modules/ads868x` ドライバの実機確認。標準 ADC API で DT の io-channels を読む (samples/drivers/adc/adc_dt 相当 + 全 ch 一括読み) |
 
 CAN のフレームレイアウトは [kart-can](https://github.com/KART-Software/kart-can)
 (サブモジュール) の can.yaml 単一ソースから生成された `kart_can.h/.c` を使う

@@ -1,0 +1,6 @@
+# out-of-tree 用の Kconfig 入口。upstream では drivers/adc/Kconfig の `if ADC` ブロック内で
+#   source "drivers/adc/Kconfig.ads868x"
+# されるので、その囲いをここで再現する。
+if ADC
+rsource "drivers/adc/Kconfig.ads868x"
+endif # ADC
