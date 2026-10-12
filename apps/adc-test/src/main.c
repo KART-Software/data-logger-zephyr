@@ -26,6 +26,25 @@
 
 #define DBG ((volatile uint32_t *)0x20000100)	/* TCMU ブレッドクラム */
 
+#if defined(CONFIG_SOC_MIMX8ML8)
+/* --- i.MX8MP (DEBIX) M7: ECSPI1 のクロックを自前で立てる ---
+ * Zephyr の ccm ドライバは ECSPI について「SYS_PLL1 / root 分周」でレートを計算するだけで
+ * gate も root も立てない。falcon 経路では U-Boot proper も通らないので M7 が立てる
+ * (can-gw の CAN1 root と同じ流儀)。ROOT120 = ECSPI1_CLK_ROOT: EN | MUX=4 (SYS_PLL1 800MHz)
+ * | PRE=/1 | POST=/16 → 50MHz。SPI 5MHz はドライバの分周で作る。 */
+#include <fsl_clock.h>
+#define CCM_ECSPI1_CLK_ROOT	0x3038BC00u	/* CCM TARGET_ROOT120 */
+static int m7_clocks_enable(void)
+{
+	*(volatile uint32_t *)CCM_ECSPI1_CLK_ROOT = (1u << 28) | (4u << 24) | (0u << 16) | 15u;
+	CLOCK_EnableClock(kCLOCK_Ecspi1);
+	CLOCK_EnableClock(kCLOCK_Gpio5);
+	/* 前任が SPI 転送中に止められていても白紙から: CONREG=0 (ECSPI disable) */
+	*(volatile uint32_t *)0x30820008u = 0;
+	return 0;
+}
+SYS_INIT(m7_clocks_enable, PRE_KERNEL_1, 0);
+#else
 /* --- CCGR domain1 self-serve (can-gw と同一。kmm-yocto pitfalls #25) --- */
 #define CCM_CCGR_ECSPI2_SET  0x30384084u
 #define CCM_CCGR_GPIO3_SET   0x303840D4u
@@ -47,6 +66,7 @@ static int m4_clocks_enable(void)
 	return 0;
 }
 SYS_INIT(m4_clocks_enable, PRE_KERNEL_1, 0);
+#endif /* SoC */
 
 /* mode1 = CPHA。8bit word・MSB first。CS は cs-gpios (GPIO3_IO21) 任せ */
 static const struct spi_dt_spec adc = SPI_DT_SPEC_GET(
@@ -100,17 +120,23 @@ static int ads8688_prog_read(uint8_t addr, uint8_t *val)
 
 int main(void)
 {
-	const struct device *gpio5 = DEVICE_DT_GET(DT_NODELABEL(gpio5));
+#if !defined(CONFIG_SOC_MIMX8ML8)
+	const struct device *gpio5 = DEVICE_DT_GET(DT_NODELABEL(gpio5));	/* 8MM: MCP2515 CS デアサート用 */
+#endif
 	uint16_t v[8];
 	int ret;
 
 	DBG[0] = 0xADC00001;
+#if defined(CONFIG_SOC_MIMX8ML8)
+	printk("M7: adc-test (ADS8688 @ ECSPI1 J2 Pin14/16/18/20, CS=GPIO5_IO09, 5MHz mode1)\n");
+#else
 	printk("M4: adc-test (ADS8688 @ ECSPI2 CS=GPIO3_IO21, 5MHz mode1)\n");
 
 	/* 共有バス上の MCP2515 (HAT) をデアサート (CS=GPIO5_IO13 を High) */
 	if (device_is_ready(gpio5)) {
 		gpio_pin_configure(gpio5, 13, GPIO_OUTPUT_INACTIVE | GPIO_ACTIVE_LOW);
 	}
+#endif /* SoC */
 
 	if (!spi_is_ready_dt(&adc)) {
 		printk("adc-test: SPI not ready\n");
@@ -183,6 +209,12 @@ int main(void)
 				       (uint32_t)(scans * 1000 / (uint32_t)dt),
 				       (uint32_t)(scans * 8 / (uint32_t)dt),
 				       corrupt, v[0], v[3]);
+				/* 8ch 全部を mV で (0x0000=0V, 0xFFFF=5120mV。配線チャネルの確認用) */
+				printk("mV:");
+				for (int ch = 0; ch < 8; ch++) {
+					printk(" ch%d=%u", ch, (uint32_t)v[ch] * 5120u / 65535u);
+				}
+				printk("\n");
 				t0 = k_uptime_get();
 				scans = 0;
 				corrupt = 0;

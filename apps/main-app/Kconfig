@@ -1,0 +1,20 @@
+# main-app の設定 (製品は既定値のまま)
+
+menu "main-app"
+
+config MAIN_APP_KA_TEST_PAUSE_AT_S
+	int "Test only: pause the keepalive after this many messages (0 = never)"
+	default 0
+	help
+	  Linux 側 (kmm-yocto の mcore-keepalive) の途切れの検知を試すための設定。
+	  送り始めてからこの数だけ送った後、MAIN_APP_KA_TEST_PAUSE_LEN_S 秒だけ送るのを止め、
+	  その後は再開する。製品では 0 (無効)。
+
+config MAIN_APP_KA_TEST_PAUSE_LEN_S
+	int "Test only: length of the keepalive pause in seconds"
+	default 10
+	depends on MAIN_APP_KA_TEST_PAUSE_AT_S > 0
+
+endmenu
+
+source "Kconfig.zephyr"

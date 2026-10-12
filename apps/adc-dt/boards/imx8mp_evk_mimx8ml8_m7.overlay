@@ -1,0 +1,111 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+/*
+ * DEBIX Infinity (i.MX8MP) M7: ADS8688 @ ECSPI1 (J2 ヘッダー)。配線は adc-test と同じ
+ * (Pin20 SCLK / Pin16 MOSI / Pin18 MISO / Pin14 SS0 = GPIO5_IO09 を CS)。
+ * ECSPI1 のクロック (CCGR7 gate + ROOT120) は src/imx8mp_clocks.c が立てる。
+ *
+ * チャネル設定 (adc-test は全 ch 0〜5.12V = range 0x06):
+ *   ch0-5: 0〜5.12V (ADC_GAIN_4_5)                → adc-test の mV と直接比較
+ *   ch6  : ±5.12V  (ADC_GAIN_4_5 + differential) → bipolar/符号付き経路の確認
+ *   ch7  : 0〜10.24V (ADC_GAIN_2_5)               → もう一方の unipolar レンジの確認
+ */
+/ {
+	zephyr,user {
+		io-channels = <&adc_ads8688 0>, <&adc_ads8688 1>, <&adc_ads8688 2>,
+			      <&adc_ads8688 3>, <&adc_ads8688 4>, <&adc_ads8688 5>,
+			      <&adc_ads8688 6>, <&adc_ads8688 7>;
+	};
+};
+
+&pinctrl {
+	ecspi1_adc: ecspi1_adc {
+		group0 {
+			pinmux = <&iomuxc_ecspi1_sclk_ecspi_sclk_ecspi1_sclk>,
+				 <&iomuxc_ecspi1_mosi_ecspi_mosi_ecspi1_mosi>,
+				 <&iomuxc_ecspi1_miso_ecspi_miso_ecspi1_miso>,
+				 <&iomuxc_ecspi1_ss0_gpio_io_gpio5_io9>;	/* ADS8688 CS */
+			slew-rate = "fast";
+			drive-strength = "x2";
+		};
+	};
+};
+
+&gpio5 {
+	status = "okay";
+};
+
+&ecspi1 {
+	status = "okay";
+	pinctrl-0 = <&ecspi1_adc>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio5 9 GPIO_ACTIVE_LOW>;
+
+	adc_ads8688: ads8688@0 {
+		compatible = "ti,ads8688";
+		reg = <0>;
+		spi-max-frequency = <5000000>;
+		#io-channel-cells = <1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		channel@0 {
+			reg = <0>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+		channel@1 {
+			reg = <1>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+		channel@2 {
+			reg = <2>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+		channel@3 {
+			reg = <3>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+		channel@4 {
+			reg = <4>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+		channel@5 {
+			reg = <5>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+		channel@6 {
+			reg = <6>;
+			zephyr,gain = "ADC_GAIN_4_5";
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+			zephyr,differential;	/* ±5.12V */
+		};
+		channel@7 {
+			reg = <7>;
+			zephyr,gain = "ADC_GAIN_2_5";	/* 0〜10.24V */
+			zephyr,reference = "ADC_REF_INTERNAL";
+			zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+			zephyr,resolution = <16>;
+		};
+	};
+};

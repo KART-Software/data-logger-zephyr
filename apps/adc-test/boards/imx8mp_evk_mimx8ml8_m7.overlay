@@ -1,0 +1,42 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+/*
+ * DEBIX Infinity (i.MX8MP) M7: ADS8688 @ ECSPI1 (J2 ヘッダー)。
+ *
+ * J2 配線 (debix-infinity-user-manual v1.11 の 40pin 表):
+ *   Pin20 ECSPI1_SCLK / Pin16 ECSPI1_MOSI / Pin18 ECSPI1_MISO
+ *   Pin14 ECSPI1_SS0 → GPIO5_IO09 として CS (factory DTS の ecspi1 と同じ cs-gpios)
+ *   GND = Pin5/7、5V = Pin6/8 (ADS8688 モジュールの AVDD/DVDD は別途)
+ * Linux 側の ecspi1 は imx8mp-debix.dts で disabled (M7 の縄張り)。
+ * ECSPI1 のクロック (CCGR7 gate + ROOT120) は Zephyr の ccm ドライバが立てないため
+ * main.c の m7_clocks_enable が立てる (can-gw の CAN1 と同じ流儀)。
+ */
+&pinctrl {
+	ecspi1_adc: ecspi1_adc {
+		group0 {
+			pinmux = <&iomuxc_ecspi1_sclk_ecspi_sclk_ecspi1_sclk>,
+				 <&iomuxc_ecspi1_mosi_ecspi_mosi_ecspi1_mosi>,
+				 <&iomuxc_ecspi1_miso_ecspi_miso_ecspi1_miso>,
+				 <&iomuxc_ecspi1_ss0_gpio_io_gpio5_io9>;	/* ADS8688 CS */
+			slew-rate = "fast";
+			drive-strength = "x2";
+		};
+	};
+};
+
+&gpio5 {
+	status = "okay";
+};
+
+&ecspi1 {
+	status = "okay";
+	pinctrl-0 = <&ecspi1_adc>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio5 9 GPIO_ACTIVE_LOW>;
+
+	adc_ads8688: ads8688@0 {
+		compatible = "ti,ads8688";
+		reg = <0>;
+		spi-max-frequency = <5000000>;
+		status = "okay";
+	};
+};
