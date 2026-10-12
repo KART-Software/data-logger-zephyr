@@ -36,7 +36,8 @@ SRC_URI パッチ相当。west に標準機構が無いため `west-container.sh
 
 | アプリ | 用途 |
 |--------|------|
-| `can-gw` | **本命**。CAN コントローラ (8MM: MCP2515 @ ECSPI2 / 8MP: FlexCAN1) ⇄ rpmsg "rpmsg-can" の双方向 CAN ゲートウェイ。Linux 側は kmm-yocto の `rpmsg-can` モジュールが bind し `rpmsgcan0` を生やす |
+| `main-app` | **M コアの製品ファーム** (8MP: M7 / 8MM: M4)。土台 (Linux との rpmsg) と機能をファイルで分ける。土台のキープアライブ (`keepalive.c`) は rpmsg のチャネル `mcore-keepalive` で、M コアが動いていることを 1 秒ごとに Linux へ知らせる (受けるのは kmm-yocto の mcore-keepalive カーネルモジュール。kmm-yocto の `ab mcore update` はこれが届き続けるときだけ確定する、issue #19)。機能は CAN の中継 (`can_gw.c`、can-gw から移した)。ADC はこれから移す |
+| `can-gw` | main-app の前の製品のファーム。CAN コントローラ (8MM: MCP2515 @ ECSPI2 / 8MP: FlexCAN1) ⇄ rpmsg "rpmsg-can" の双方向 CAN ゲートウェイ。Linux 側は kmm-yocto の `rpmsg-can` モジュールが bind し `rpmsgcan0` を生やす。キープアライブを送らないので、8MP の `ab mcore update` では確定できない。8MM では ADS8688 の読み取りも同居している (main-app へ移すまで、ADC の元のコードはここ) |
 | `can-sniff` | MCP2515 (ECSPI2) で CAN 受信 → UART4 (J64) 表示の疎通確認 |
 | `rpmsg-echo` | rpmsg 疎通確認 (Zephyr の openamp_rsc_table サンプル構成) |
 | `gpio-mu-test` | MU (IPM) + GPIO のみの最小構成。MU 受信 × ペリフェラル read の SoC リセット切り分け用 |
